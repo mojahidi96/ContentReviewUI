@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import type { User } from '../auth/auth.models';
 import { AuthService } from '../auth/auth.service';
-import { TEST_USER, provideTestHttp } from '../../testing/test-providers';
+import { TEST_USER, flushCsrf, provideTestHttp, toUserDto } from '../../testing/test-providers';
 import { ThemeService } from './theme.service';
 
 const OTHER_USER: User = {
@@ -20,7 +20,8 @@ describe('ThemeService', () => {
 
   async function signIn(user: User): Promise<void> {
     const result = firstValueFrom(auth.login({ email: user.email, password: 'pw' }));
-    http.expectOne('/api/v1/auth/login').flush({ user });
+    flushCsrf(http);
+    http.expectOne('/api/v1/auth/login').flush({ user: toUserDto(user), csrfToken: 't' });
     await result;
     TestBed.tick();
   }

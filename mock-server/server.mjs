@@ -1,18 +1,24 @@
 /**
- * Development-only mock of the Node.js ContentReviewService.
+ * Development-only mock of the Node.js ContentReviewService (public API v1).
  *
- * Implements docs/api-contract.md with in-memory storage so the Angular app can be run and
- * demoed from a clean clone. NOT for production use.
+ * Mirrors the *verified* contract in docs/api-contract.md (taken from the ContentReviewService
+ * source) with in-memory storage, so the Angular app can be run and demoed from a clean clone
+ * without MongoDB, Node or Python. NOT for production use.
+ *
+ * Mock-only extensions (NOT in the real Node service; see docs/integration-status.md):
+ *   - POST /auth/guest              temporary guest author
+ *   - User.role ("reader")          the seeded read-only account
+ *   - User.guest
  *
  * Environment variables:
  *   PORT                       (default 3000)
  *   HOST                       interface to bind (default localhost, so the mock and its public
  *                              demo accounts are not reachable from the network)
  *   MOCK_LATENCY_MS            base latency for every response (default 300)
- *   MOCK_REVIEW_LATENCY_MS     extra latency for review creation (default 1200)
- *   MOCK_REVIEW_FAILURE_RATE   0..1 probability that POST /reviews returns 503 (default 0)
- *   MOCK_SESSION_TTL_MS        session lifetime (default 30 minutes)
- *   COOKIE_SECURE              set to "false" only if your browser rejects Secure cookies on http://localhost
+ *   MOCK_REVIEW_LATENCY_MS     simulated analysis time per review (default 1200)
+ *   MOCK_REVIEW_FAILURE_RATE   0..1 probability that a review ends in review.failed (default 0)
+ *   MOCK_SESSION_TTL_MS        session lifetime (default 15 minutes, like AUTH_TOKEN_TTL)
+ *   COOKIE_SECURE              "true" to mark cookies Secure (default false, like Node in dev)
  */
 import cookieParser from 'cookie-parser';
 import express from 'express';
@@ -24,304 +30,549 @@ const HOST = process.env.HOST ?? 'localhost';
 const LATENCY_MS = Number(process.env.MOCK_LATENCY_MS ?? 300);
 const REVIEW_LATENCY_MS = Number(process.env.MOCK_REVIEW_LATENCY_MS ?? 1200);
 const FAILURE_RATE = Number(process.env.MOCK_REVIEW_FAILURE_RATE ?? 0);
-const SESSION_TTL_MS = Number(process.env.MOCK_SESSION_TTL_MS ?? 30 * 60 * 1000);
-const COOKIE_SECURE = process.env.COOKIE_SECURE !== 'false';
-const MAX_CONTENT_CHARS = 20_000;
-const SESSION_COOKIE = 'sid';
-const XSRF_COOKIE = 'XSRF-TOKEN';
-const XSRF_HEADER = 'x-xsrf-token';
-const FINDING_STATUSES = new Set(['pending', 'accepted', 'dismissed', 'resolved']);
-const PASSWORD_RULES = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{12,128}$/;
+const SESSION_TTL_MS = Number(process.env.MOCK_SESSION_TTL_MS ?? 15 * 60 * 1000);
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+const MAX_CONTENT_CODE_POINTS = 50_000;
+const SESSION_COOKIE = 'content_review_session';
+const ANON_COOKIE = `${SESSION_COOKIE}_anon`;
+const CSRF_HEADER = 'x-csrf-token';
+const CATEGORIES = ['grammar', 'spelling', 'profanity'];
+const REVIEW_STATUSES = ['pending', 'processing', 'completed', 'failed', 'cancelled'];
+const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const FINDING_TRANSITIONS = {
+  pending: ['accepted', 'dismissed'],
+  accepted: ['dismissed'],
+  dismissed: ['accepted'],
+  resolved: [],
+};
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HEARTBEAT_MS = 15_000;
+const SSE_RETRY_MS = 3_000;
 
 // ---------------------------------------------------------------- storage
-/** @type {Map<string, {id:string, fullName:string, email:string, role:'author'|'reader', salt:string, hash:string}>} */
+/** @type {Map<string, any>} keyed by lower-case email */
 const usersByEmail = new Map();
-/**
- * Temporary guest accounts, keyed by id. They have no credentials and are deleted together with
- * their reviews when the guest signs out or the session expires.
- * @type {Map<string, {id:string, fullName:string, email:string, role:'author', guest:true}>}
- */
+/** Guest accounts (mock-only), keyed by id. Deleted with their reviews when the session ends. */
 const guestUsers = new Map();
 /** @type {Map<string, {userId:string, expiresAt:number}>} */
 const sessions = new Map();
+/** CSRF token per identity (`session:<sid>` or `anon:<id>`). */
+const csrfTokens = new Map();
 /** @type {Map<string, any>} */
 const reviews = new Map();
+/** Persisted events per review: [{ id, type, data }], ids strictly increasing. */
+const reviewEvents = new Map();
+/** Live SSE listeners per review. */
+const listeners = new Map();
+
+const hex24 = () => randomBytes(12).toString('hex');
+const nowIso = () => new Date().toISOString();
 
 function hashPassword(password, salt = randomBytes(16).toString('hex')) {
   return { salt, hash: scryptSync(password, salt, 64).toString('hex') };
 }
 
 function verifyPassword(password, user) {
-  const candidate = scryptSync(password, user.salt, 64);
-  return timingSafeEqual(candidate, Buffer.from(user.hash, 'hex'));
+  return timingSafeEqual(scryptSync(password, user.salt, 64), Buffer.from(user.hash, 'hex'));
 }
 
 /** Compared against when the email is unknown, so response time doesn't reveal which emails exist. */
 const DUMMY_CREDENTIALS = hashPassword(randomBytes(16).toString('hex'));
 
-/**
- * Roles: an `author` can edit content and run/act on reviews; a `reader` only gets read-only
- * access. Self-registered accounts are authors so the demo stays usable.
- */
-function addUser(fullName, email, password, role = 'author') {
+function addUser(displayName, email, password, role) {
   const user = {
-    id: `usr_${randomUUID()}`,
-    fullName,
+    id: hex24(),
+    displayName,
     email: email.toLowerCase(),
-    role,
+    createdAt: nowIso(),
+    ...(role ? { role } : {}),
     ...hashPassword(password),
   };
   usersByEmail.set(user.email, user);
   return user;
 }
 
-addUser('Demo Reviewer', 'demo@example.com', 'Demo!Passw0rd2026', 'author');
+addUser('Demo Reviewer', 'demo@example.com', 'Demo!Passw0rd2026');
+// `role: 'reader'` is a mock-only extension; Node has no roles.
 addUser('Riley Reader', 'reader@example.com', 'Reader!Passw0rd2026', 'reader');
 
-const publicUser = ({ id, fullName, email, role, guest }) => ({
+const publicUser = ({ id, email, displayName, createdAt, role, guest }) => ({
   id,
-  fullName,
   email,
-  role,
+  displayName,
+  createdAt,
+  ...(role ? { role } : {}),
   ...(guest ? { guest: true } : {}),
 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const fail = (res, status, code, message, fieldErrors) =>
-  res.status(status).json({ error: { code, message, ...(fieldErrors ? { fieldErrors } : {}) } });
+const fail = (req, res, status, code, message, details) =>
+  res.status(status).json({
+    error: { code, message, requestId: req.requestId, ...(details ? { details } : {}) },
+  });
 
 // ---------------------------------------------------------------- app
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '100kb' }));
-app.use(cookieParser());
+app.disable('etag');
+app.use((req, res, next) => {
+  const incoming = req.get('x-request-id');
+  req.requestId = incoming && /^[A-Za-z0-9._-]{8,64}$/.test(incoming) ? incoming : randomUUID();
+  res.set('X-Request-Id', req.requestId);
+  next();
+});
+app.use('/api', express.json({ limit: '512kb', strict: true }));
+app.use('/api', cookieParser());
 app.use(async (_req, _res, next) => {
   await sleep(LATENCY_MS);
   next();
 });
 
-// CSRF: double-submit cookie. Every response guarantees an XSRF-TOKEN cookie exists; every
-// state-changing request must echo it in the X-XSRF-TOKEN header (Angular does this automatically).
-app.use((req, res, next) => {
-  let token = req.cookies[XSRF_COOKIE];
-  if (!token) {
-    token = randomBytes(32).toString('hex');
-    res.cookie(XSRF_COOKIE, token, { sameSite: 'strict', secure: COOKIE_SECURE, path: '/' });
-  }
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-    const header = req.get(XSRF_HEADER);
-    if (!header || !req.cookies[XSRF_COOKIE] || header !== req.cookies[XSRF_COOKIE]) {
-      return fail(res, 403, 'CSRF_TOKEN_INVALID', 'Missing or invalid CSRF token.');
-    }
+const cookieOptions = (maxAge) => ({
+  httpOnly: true,
+  secure: COOKIE_SECURE,
+  sameSite: 'lax',
+  path: '/api',
+  ...(maxAge ? { maxAge } : {}),
+});
+
+/** Resolves the session cookie into req.auth; invalid or expired cookies are ignored. */
+app.use('/api', (req, res, next) => {
+  const sid = req.cookies[SESSION_COOKIE];
+  const session = sid && sessions.get(sid);
+  if (session && session.expiresAt > Date.now()) {
+    const user =
+      guestUsers.get(session.userId) ??
+      [...usersByEmail.values()].find((u) => u.id === session.userId);
+    if (user) req.auth = { sid, user };
+  } else if (sid) {
+    endSession(sid);
+    res.clearCookie(SESSION_COOKIE, cookieOptions());
   }
   next();
 });
 
-function startSession(res, user) {
+function identity(req) {
+  if (req.auth) return `session:${req.auth.sid}`;
+  const anon = req.cookies[ANON_COOKIE];
+  return anon ? `anon:${anon}` : null;
+}
+
+/** Issues (or re-uses) the CSRF token for the caller; creates an anonymous id if needed. */
+function issueCsrfToken(req, res, rotate = false) {
+  let id = identity(req);
+  if (!id) {
+    const anon = randomBytes(24).toString('hex');
+    res.cookie(ANON_COOKIE, anon, cookieOptions(24 * 60 * 60 * 1000));
+    req.cookies[ANON_COOKIE] = anon;
+    id = `anon:${anon}`;
+  }
+  if (rotate || !csrfTokens.has(id)) csrfTokens.set(id, randomBytes(32).toString('hex'));
+  return csrfTokens.get(id);
+}
+
+function csrfProtect(req, res, next) {
+  const id = identity(req);
+  const expected = id && csrfTokens.get(id);
+  if (!expected || req.get(CSRF_HEADER) !== expected) {
+    return fail(req, res, 403, 'CSRF_INVALID', 'The CSRF token is missing or invalid.');
+  }
+  next();
+}
+
+function requireAuth(req, res, next) {
+  if (!req.auth) return fail(req, res, 401, 'AUTH_REQUIRED', 'Authentication required.');
+  next();
+}
+
+function startSession(req, res, user) {
   const sid = randomBytes(32).toString('hex');
   sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
-  res.cookie(SESSION_COOKIE, sid, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite: 'strict',
-    path: '/api',
-    maxAge: SESSION_TTL_MS,
-  });
+  res.cookie(SESSION_COOKIE, sid, cookieOptions(SESSION_TTL_MS));
+  res.clearCookie(ANON_COOKIE, cookieOptions());
+  req.auth = { sid, user };
+  return issueCsrfToken(req, res, true);
 }
 
 /** Ends a session; a guest's account and reviews go with it. */
 function endSession(sid) {
   const session = sessions.get(sid);
   sessions.delete(sid);
+  csrfTokens.delete(`session:${sid}`);
   if (session && guestUsers.delete(session.userId)) {
     for (const [id, review] of reviews) {
-      if (review.ownerId === session.userId) reviews.delete(id);
+      if (review.ownerId === session.userId) deleteReview(id);
     }
   }
 }
 
-function currentUser(req) {
-  const sid = req.cookies[SESSION_COOKIE];
-  const session = sid && sessions.get(sid);
-  if (!session) return null;
-  if (session.expiresAt < Date.now()) {
-    endSession(sid);
-    return null;
-  }
-  return (
-    guestUsers.get(session.userId) ??
-    [...usersByEmail.values()].find((u) => u.id === session.userId) ??
-    null
-  );
-}
+const validation = (req, res, details) =>
+  fail(req, res, 400, 'VALIDATION_FAILED', 'The request is invalid.', details);
 
-function requireAuth(req, res, next) {
-  const user = currentUser(req);
-  if (!user) return fail(res, 401, 'UNAUTHENTICATED', 'Authentication required.');
-  req.user = user;
-  next();
-}
-
-/** Only authors may create reviews or change findings. Must run after `requireAuth`. */
-function requireAuthor(req, res, next) {
-  if (req.user.role !== 'author') {
-    return fail(res, 403, 'FORBIDDEN', 'Only authors can review or change content.');
-  }
-  next();
+/** Rejects unknown body keys, like Node's strict Zod schemas. */
+function unknownKeys(body, allowed) {
+  return Object.keys(body ?? {})
+    .filter((k) => !allowed.includes(k))
+    .map((k) => ({ path: `body.${k}`, message: `Unrecognized key: "${k}"` }));
 }
 
 const api = express.Router();
 
 // ---------------------------------------------------------------- auth
-api.post('/auth/register', (req, res) => {
-  const { fullName, email, password } = req.body ?? {};
-  const fieldErrors = {};
-  if (typeof fullName !== 'string' || fullName.trim().length < 2)
-    fieldErrors.fullName = 'Full name is required.';
-  if (typeof email !== 'string' || !EMAIL_RULE.test(email))
-    fieldErrors.email = 'A valid email is required.';
-  if (typeof password !== 'string' || !PASSWORD_RULES.test(password))
-    fieldErrors.password = 'Password does not meet the requirements.';
-  if (Object.keys(fieldErrors).length)
-    return fail(res, 422, 'VALIDATION_FAILED', 'Invalid registration.', fieldErrors);
-  if (usersByEmail.has(email.toLowerCase()))
-    return fail(res, 409, 'EMAIL_TAKEN', 'An account with this email already exists.');
-  const user = addUser(fullName.trim(), email, password);
-  startSession(res, user);
-  res.status(201).json({ user: publicUser(user) });
+api.get('/auth/csrf', (req, res) => {
+  res.set('Cache-Control', 'no-store').json({ csrfToken: issueCsrfToken(req, res) });
 });
 
-api.post('/auth/login', (req, res) => {
+api.post('/auth/register', csrfProtect, (req, res) => {
+  const { email, password, displayName } = req.body ?? {};
+  const details = unknownKeys(req.body, ['email', 'password', 'displayName']);
+  if (typeof email !== 'string' || email.length > 254 || !EMAIL_RULE.test(email.trim()))
+    details.push({ path: 'body.email', message: 'Must be a valid email address' });
+  if (typeof password !== 'string' || password.length < 12)
+    details.push({ path: 'body.password', message: 'Password must be at least 12 characters' });
+  else if (Buffer.byteLength(password, 'utf8') > 72)
+    details.push({ path: 'body.password', message: 'Password must be at most 72 bytes' });
+  if (typeof displayName !== 'string' || !displayName.trim() || displayName.trim().length > 100)
+    details.push({ path: 'body.displayName', message: 'Display name is required' });
+  if (details.length) return validation(req, res, details);
+  if (usersByEmail.has(email.trim().toLowerCase()))
+    return fail(
+      req,
+      res,
+      409,
+      'EMAIL_ALREADY_REGISTERED',
+      'An account with this email already exists.',
+    );
+  const user = addUser(displayName.trim(), email.trim(), password);
+  const csrfToken = startSession(req, res, user);
+  res
+    .status(201)
+    .set('Cache-Control', 'no-store')
+    .json({ user: publicUser(user), csrfToken });
+});
+
+api.post('/auth/login', csrfProtect, (req, res) => {
   const { email, password } = req.body ?? {};
-  const user = typeof email === 'string' ? usersByEmail.get(email.toLowerCase()) : undefined;
+  const user = typeof email === 'string' ? usersByEmail.get(email.trim().toLowerCase()) : undefined;
   const passwordOk =
     typeof password === 'string' && verifyPassword(password, user ?? DUMMY_CREDENTIALS);
   if (!user || !passwordOk) {
-    return fail(res, 401, 'INVALID_CREDENTIALS', 'Email or password is incorrect.');
+    return fail(req, res, 401, 'INVALID_CREDENTIALS', 'Email or password is incorrect.');
   }
-  startSession(res, user);
-  res.json({ user: publicUser(user) });
+  const csrfToken = startSession(req, res, user);
+  res.set('Cache-Control', 'no-store').json({ user: publicUser(user), csrfToken });
 });
 
-/** Starts a session for a new temporary guest author. No credentials are needed. */
-api.post('/auth/guest', (_req, res) => {
+/** MOCK-ONLY: starts a session for a new temporary guest author. Not in the Node service. */
+api.post('/auth/guest', csrfProtect, (req, res) => {
   const user = {
-    id: `usr_guest_${randomUUID()}`,
-    fullName: 'Guest User',
+    id: hex24(),
+    displayName: 'Guest User',
     email: '',
-    role: 'author',
+    createdAt: nowIso(),
     guest: true,
   };
   guestUsers.set(user.id, user);
-  startSession(res, user);
-  res.status(201).json({ user: publicUser(user) });
+  const csrfToken = startSession(req, res, user);
+  res
+    .status(201)
+    .set('Cache-Control', 'no-store')
+    .json({ user: publicUser(user), csrfToken });
 });
 
-api.post('/auth/logout', (req, res) => {
-  endSession(req.cookies[SESSION_COOKIE]);
-  res.clearCookie(SESSION_COOKIE, { path: '/api' });
+api.post('/auth/logout', requireAuth, csrfProtect, (req, res) => {
+  endSession(req.auth.sid);
+  res.clearCookie(SESSION_COOKIE, cookieOptions());
   res.status(204).end();
 });
 
-api.get('/auth/me', requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
+api.get('/auth/me', requireAuth, (req, res) =>
+  res.set('Cache-Control', 'no-store').json({ user: publicUser(req.auth.user) }),
+);
 
 // ---------------------------------------------------------------- reviews
-const summarize = (review) => ({
-  id: review.id,
-  title: review.title,
-  createdAt: review.createdAt,
-  status: review.status,
-  contentLength: review.contentLength,
-  findingCounts: review.findings.reduce(
-    (acc, f) => ({ ...acc, total: acc.total + 1, [f.status]: (acc[f.status] ?? 0) + 1 }),
-    { total: 0, pending: 0, accepted: 0, dismissed: 0, resolved: 0 },
-  ),
+const summary = (r) => ({
+  reviewId: r.reviewId,
+  documentTitle: r.documentTitle,
+  status: r.status,
+  categories: r.categories,
+  findingCount: r.findingCount,
+  errorCode: r.errorCode,
+  errorMessage: r.errorMessage,
+  createdAt: r.createdAt,
+  updatedAt: r.updatedAt,
+  completedAt: r.completedAt,
+});
+const eventsUrl = (id) => `/api/v1/reviews/${id}/events`;
+const full = (r) => ({
+  ...summary(r),
+  content: r.content,
+  contentLength: r.contentLength,
+  findings: r.findings,
+  eventsUrl: eventsUrl(r.reviewId),
 });
 
-api.post('/reviews', requireAuth, requireAuthor, async (req, res) => {
-  const { title, content } = req.body ?? {};
-  if (typeof content !== 'string' || content.trim().length === 0) {
-    return fail(res, 422, 'CONTENT_EMPTY', 'Content must not be empty.', {
-      content: 'Content is required.',
-    });
-  }
-  if (content.length > MAX_CONTENT_CHARS) {
-    return fail(res, 413, 'CONTENT_TOO_LARGE', `Content exceeds ${MAX_CONTENT_CHARS} characters.`);
-  }
-  await sleep(REVIEW_LATENCY_MS);
-  if (Math.random() < FAILURE_RATE) {
-    return fail(res, 503, 'REVIEW_UNAVAILABLE', 'The review engine is temporarily unavailable.');
-  }
-  const review = {
-    id: `rev_${randomUUID()}`,
-    ownerId: req.user.id,
-    title:
-      typeof title === 'string' && title.trim() ? title.trim().slice(0, 200) : 'Untitled document',
-    createdAt: new Date().toISOString(),
-    status: 'completed',
-    content,
-    contentLength: content.length,
-    contentHash: createHash('sha256').update(content).digest('hex'),
-    findings: analyze(content, () => `fnd_${randomUUID()}`),
+function emit(review, type, data) {
+  const log = reviewEvents.get(review.reviewId);
+  if (!log) return; // deleted
+  const event = {
+    id: log.length + 1,
+    type,
+    data: { reviewId: review.reviewId, ...data, occurredAt: nowIso() },
   };
-  reviews.set(review.id, review);
-  const { ownerId: _ownerId, ...body } = review;
-  res.status(201).json(body);
-});
+  log.push(event);
+  for (const listener of listeners.get(review.reviewId) ?? []) listener(event);
+}
 
-api.get('/reviews', requireAuth, (req, res) => {
-  const items = [...reviews.values()]
-    .filter((r) => r.ownerId === req.user.id)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(summarize);
-  res.json({ items });
-});
+function setStatus(review, status, extra = {}) {
+  Object.assign(review, { status, updatedAt: nowIso() }, extra);
+}
 
+/** Simulates the job worker: queued → analyzing → validating → persisting → findings → completed. */
+async function processReview(review) {
+  await sleep(150);
+  if (!reviews.has(review.reviewId)) return;
+  setStatus(review, 'processing');
+  emit(review, 'review.started', { status: 'processing' });
+  emit(review, 'review.progress', { stage: 'analyzing', attempt: 1 });
+  await sleep(REVIEW_LATENCY_MS);
+  if (!reviews.has(review.reviewId)) return;
+  if (Math.random() < FAILURE_RATE) {
+    const errorCode = 'LLM_SERVICE_UNAVAILABLE';
+    const errorMessage = 'The analysis service is temporarily unavailable.';
+    setStatus(review, 'failed', { errorCode, errorMessage });
+    emit(review, 'review.failed', { status: 'failed', errorCode, errorMessage });
+    return;
+  }
+  emit(review, 'review.progress', { stage: 'validating', attempt: 1 });
+  const findings = analyze(review.content, review.categories, () => `fnd_${hex24()}`);
+  emit(review, 'review.progress', { stage: 'persisting', attempt: 1 });
+  const completedAt = nowIso();
+  setStatus(review, 'completed', { findings, findingCount: findings.length, completedAt });
+  for (const finding of findings) emit(review, 'finding.detected', { finding });
+  emit(review, 'review.completed', {
+    status: 'completed',
+    findingCount: findings.length,
+    completedAt,
+  });
+}
+
+function deleteReview(id) {
+  reviews.delete(id);
+  reviewEvents.delete(id);
+  for (const listener of listeners.get(id) ?? []) listener(null);
+  listeners.delete(id);
+}
+
+const isReviewId = (id) => /^[a-f0-9]{24}$/.test(id);
+
+/** Same 404 for "missing" and "not yours", so review ids don't leak. */
 function ownedReview(req, res) {
+  if (!isReviewId(req.params.reviewId)) {
+    validation(req, res, [{ path: 'params.reviewId', message: 'Invalid review id' }]);
+    return null;
+  }
   const review = reviews.get(req.params.reviewId);
-  // Same 404 for "missing" and "not yours" to avoid leaking review IDs.
-  if (!review || review.ownerId !== req.user.id) {
-    fail(res, 404, 'REVIEW_NOT_FOUND', 'Review not found.');
+  if (!review || review.ownerId !== req.auth.user.id) {
+    fail(req, res, 404, 'REVIEW_NOT_FOUND', 'Review not found.');
     return null;
   }
   return review;
 }
 
-api.get('/reviews/:reviewId', requireAuth, (req, res) => {
-  const review = ownedReview(req, res);
-  if (!review) return;
-  const { ownerId: _ownerId, ...body } = review;
-  res.json(body);
+api.use('/reviews', requireAuth);
+
+api.post('/reviews', csrfProtect, (req, res) => {
+  const { documentTitle, content, categories } = req.body ?? {};
+  const details = unknownKeys(req.body, ['documentTitle', 'content', 'categories']);
+  if (
+    typeof documentTitle !== 'string' ||
+    !documentTitle.trim() ||
+    documentTitle.trim().length > 200
+  )
+    details.push({ path: 'body.documentTitle', message: 'Document title is required' });
+  if (typeof content !== 'string' || !content.trim())
+    details.push({ path: 'body.content', message: 'Content must not be empty' });
+  else if (!content.isWellFormed())
+    details.push({
+      path: 'body.content',
+      message: 'Content contains invalid Unicode (lone surrogates)',
+    });
+  else if (Array.from(content).length > MAX_CONTENT_CODE_POINTS)
+    details.push({
+      path: 'body.content',
+      message: `Content must be at most ${MAX_CONTENT_CODE_POINTS} characters`,
+    });
+  if (
+    !Array.isArray(categories) ||
+    categories.length === 0 ||
+    !categories.every((c) => CATEGORIES.includes(c)) ||
+    new Set(categories).size !== categories.length
+  )
+    details.push({ path: 'body.categories', message: 'At least one unique category is required' });
+  if (details.length) return validation(req, res, details);
+
+  const createdAt = nowIso();
+  const review = {
+    reviewId: hex24(),
+    ownerId: req.auth.user.id,
+    documentTitle: documentTitle.trim(),
+    status: 'pending',
+    categories,
+    findingCount: 0,
+    errorCode: null,
+    errorMessage: null,
+    createdAt,
+    updatedAt: createdAt,
+    completedAt: null,
+    content,
+    contentLength: Array.from(content).length,
+    contentHash: createHash('sha256').update(content).digest('hex'),
+    findings: [],
+  };
+  reviews.set(review.reviewId, review);
+  reviewEvents.set(review.reviewId, []);
+  void processReview(review);
+  res
+    .status(202)
+    .location(`/api/v1/reviews/${review.reviewId}`)
+    .json({
+      reviewId: review.reviewId,
+      status: 'pending',
+      eventsUrl: eventsUrl(review.reviewId),
+      createdAt,
+    });
 });
 
-api.patch('/reviews/:reviewId/findings/:findingId', requireAuth, requireAuthor, (req, res) => {
+api.get('/reviews', (req, res) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 20);
+  const { status } = req.query;
+  const details = [];
+  if (!Number.isInteger(page) || page < 1)
+    details.push({ path: 'query.page', message: 'Invalid page' });
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+    details.push({ path: 'query.limit', message: 'Invalid limit' });
+  if (status !== undefined && !REVIEW_STATUSES.includes(status))
+    details.push({ path: 'query.status', message: 'Invalid status' });
+  if (details.length) return validation(req, res, details);
+  const all = [...reviews.values()]
+    .filter((r) => r.ownerId === req.auth.user.id && (!status || r.status === status))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.set('Cache-Control', 'no-store').json({
+    items: all.slice((page - 1) * limit, page * limit).map(summary),
+    page,
+    limit,
+    total: all.length,
+    totalPages: Math.ceil(all.length / limit),
+  });
+});
+
+api.get('/reviews/:reviewId', (req, res) => {
+  const review = ownedReview(req, res);
+  if (review) res.set('Cache-Control', 'no-store').json({ review: full(review) });
+});
+
+api.get('/reviews/:reviewId/events', (req, res) => {
   const review = ownedReview(req, res);
   if (!review) return;
-  const finding = review.findings.find((f) => f.id === req.params.findingId);
-  if (!finding) return fail(res, 404, 'FINDING_NOT_FOUND', 'Finding not found.');
-  const { status } = req.body ?? {};
-  if (!FINDING_STATUSES.has(status)) {
-    return fail(res, 422, 'VALIDATION_FAILED', 'Invalid status.', {
-      status: 'Unsupported status.',
-    });
+  const header = req.get('last-event-id');
+  let lastSeq =
+    header && /^\d{1,15}$/.test(header.trim())
+      ? Number(header.trim())
+      : Number(req.query.lastEventId ?? 0) || 0;
+  const log = reviewEvents.get(review.reviewId) ?? [];
+  const pending = log.filter((e) => e.id > lastSeq);
+  if (TERMINAL.has(review.status) && pending.length === 0) {
+    // Nothing left to deliver: 204 tells EventSource to stop reconnecting.
+    return res.status(204).end();
   }
-  finding.status = status;
-  res.json(finding);
+
+  res.status(200).set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-store, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`retry: ${SSE_RETRY_MS}\n\n`);
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    listeners.get(review.reviewId)?.delete(write);
+    res.end();
+  };
+  const write = (event) => {
+    if (closed) return;
+    if (event === null) return close(); // review deleted
+    if (event.id <= lastSeq) return;
+    res.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
+    lastSeq = event.id;
+    if (event.type === 'review.completed' || event.type === 'review.failed') close();
+  };
+  const heartbeat = setInterval(() => !closed && res.write(': heartbeat\n\n'), HEARTBEAT_MS);
+  if (!listeners.has(review.reviewId)) listeners.set(review.reviewId, new Set());
+  listeners.get(review.reviewId).add(write);
+  req.on('close', close);
+  for (const event of pending) write(event);
+});
+
+api.patch('/reviews/:reviewId/findings/:findingId', csrfProtect, (req, res) => {
+  const review = ownedReview(req, res);
+  if (!review) return;
+  const { status } = req.body ?? {};
+  const details = unknownKeys(req.body, ['status']);
+  if (!/^fnd_[a-f0-9]{24}$/.test(req.params.findingId))
+    details.push({ path: 'params.findingId', message: 'Invalid finding id' });
+  if (status !== 'accepted' && status !== 'dismissed')
+    details.push({
+      path: 'body.status',
+      message: 'Invalid option: expected "accepted" | "dismissed"',
+    });
+  if (details.length) return validation(req, res, details);
+  if (review.status !== 'completed')
+    return fail(req, res, 409, 'REVIEW_NOT_COMPLETED', 'The review has not completed yet.');
+  const finding = review.findings.find((f) => f.findingId === req.params.findingId);
+  if (!finding) return fail(req, res, 404, 'FINDING_NOT_FOUND', 'Finding not found.');
+  if (finding.status !== status) {
+    if (!FINDING_TRANSITIONS[finding.status].includes(status)) {
+      return fail(
+        req,
+        res,
+        409,
+        'INVALID_STATE_TRANSITION',
+        `Cannot change a finding from "${finding.status}" to "${status}".`,
+      );
+    }
+    finding.status = status;
+    finding.updatedAt = nowIso();
+  }
+  res.json({ finding });
+});
+
+api.delete('/reviews/:reviewId', csrfProtect, (req, res) => {
+  const review = ownedReview(req, res);
+  if (!review) return;
+  deleteReview(review.reviewId);
+  res.status(204).end();
 });
 
 app.use('/api/v1', api);
-app.use('/api', (_req, res) => fail(res, 404, 'NOT_FOUND', 'Unknown endpoint.'));
-app.use((err, _req, res, _next) => {
+app.use((req, res) => fail(req, res, 404, 'NOT_FOUND', 'Unknown endpoint.'));
+app.use((err, req, res, _next) => {
   if (err?.type === 'entity.too.large')
-    return fail(res, 413, 'PAYLOAD_TOO_LARGE', 'Request body too large.');
-  if (err?.type === 'entity.parse.failed') return fail(res, 400, 'BAD_REQUEST', 'Malformed JSON.');
+    return fail(req, res, 413, 'PAYLOAD_TOO_LARGE', 'The request body is too large.');
+  if (err?.type === 'entity.parse.failed')
+    return fail(req, res, 400, 'MALFORMED_JSON', 'The request body is not valid JSON.');
   console.error(err);
-  fail(res, 500, 'INTERNAL', 'Unexpected server error.');
+  fail(req, res, 500, 'INTERNAL_ERROR', 'An unexpected error occurred.');
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`Mock ContentReviewService listening on http://${HOST}:${PORT}/api/v1`);
+  console.log(`Mock ContentReviewService (Node contract v1) on http://${HOST}:${PORT}/api/v1`);
   console.log('Demo author:      demo@example.com / Demo!Passw0rd2026');
-  console.log('Demo read-only:   reader@example.com / Reader!Passw0rd2026');
-  console.log('Guest:            "Continue as guest" on the sign-in page (no credentials)');
+  console.log('Demo read-only:   reader@example.com / Reader!Passw0rd2026 (mock-only role)');
+  console.log('Guest:            "Continue as guest" (mock-only endpoint)');
 });

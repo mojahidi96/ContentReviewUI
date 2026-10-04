@@ -1,7 +1,10 @@
 import { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 
 export const PASSWORD_MIN_LENGTH = 12;
-export const PASSWORD_MAX_LENGTH = 128;
+/** Node caps passwords at 72 UTF-8 bytes (the bcrypt input limit). */
+export const PASSWORD_MAX_BYTES = 72;
+
+const utf8Bytes = (value: string) => new TextEncoder().encode(value).length;
 
 export interface PasswordRule {
   readonly key: 'length' | 'lower' | 'upper' | 'digit' | 'symbol';
@@ -9,12 +12,15 @@ export interface PasswordRule {
   readonly test: (value: string) => boolean;
 }
 
-/** Mirrors the backend password policy. The backend remains the authority. */
+/**
+ * Node only enforces the length rule (12 characters to 72 bytes). The character-class rules are
+ * this UI's own, stricter policy; the backend remains the authority.
+ */
 export const PASSWORD_RULES: readonly PasswordRule[] = [
   {
     key: 'length',
-    label: `At least ${PASSWORD_MIN_LENGTH} characters`,
-    test: (v) => v.length >= PASSWORD_MIN_LENGTH && v.length <= PASSWORD_MAX_LENGTH,
+    label: `${PASSWORD_MIN_LENGTH} to ${PASSWORD_MAX_BYTES} characters`,
+    test: (v) => v.length >= PASSWORD_MIN_LENGTH && utf8Bytes(v) <= PASSWORD_MAX_BYTES,
   },
   { key: 'lower', label: 'One lowercase letter', test: (v) => /[a-z]/.test(v) },
   { key: 'upper', label: 'One uppercase letter', test: (v) => /[A-Z]/.test(v) },

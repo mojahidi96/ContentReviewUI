@@ -8,6 +8,7 @@ import { Observable, Subject, catchError, exhaustMap, map, of } from 'rxjs';
 import type { User } from '../../core/auth/auth.models';
 import { AuthService } from '../../core/auth/auth.service';
 import { safeReturnUrl } from '../../core/auth/return-url';
+import { APP_CONFIG } from '../../core/config/app-config';
 import { ErrorHandlingService } from '../../core/http/error-handling.service';
 import { ButtonDirective } from '../../shared/components/button.directive';
 import { FormField, INPUT_CLASSES, describedBy } from '../../shared/components/form-field';
@@ -98,34 +99,39 @@ const LOGIN_ERRORS = {
         </button>
       </form>
 
-      <div class="my-6 flex items-center gap-3" aria-hidden="true">
-        <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
-        <span class="text-xs text-slate-600 uppercase dark:text-slate-400">or</span>
-        <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
-      </div>
+      @if (guestLogin) {
+        <div class="my-6 flex items-center gap-3" aria-hidden="true">
+          <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+          <span class="text-xs text-slate-600 uppercase dark:text-slate-400">or</span>
+          <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+        </div>
 
-      <button
-        type="button"
-        appButton
-        variant="secondary"
-        size="lg"
-        class="w-full"
-        data-testid="guest-login"
-        aria-describedby="guest-login-hint"
-        [disabled]="pending()"
-        (click)="continueAsGuest()"
-      >
-        @if (pendingAction() === 'guest') {
-          <app-spinner />
-          Starting guest session…
-        } @else {
-          <fa-icon [icon]="guestIcon" />
-          Continue as guest
-        }
-      </button>
-      <p id="guest-login-hint" class="mt-2 text-center text-xs text-slate-600 dark:text-slate-400">
-        No account needed. Your work is discarded when you sign out.
-      </p>
+        <button
+          type="button"
+          appButton
+          variant="secondary"
+          size="lg"
+          class="w-full"
+          data-testid="guest-login"
+          aria-describedby="guest-login-hint"
+          [disabled]="pending()"
+          (click)="continueAsGuest()"
+        >
+          @if (pendingAction() === 'guest') {
+            <app-spinner />
+            Starting guest session…
+          } @else {
+            <fa-icon [icon]="guestIcon" />
+            Continue as guest
+          }
+        </button>
+        <p
+          id="guest-login-hint"
+          class="mt-2 text-center text-xs text-slate-600 dark:text-slate-400"
+        >
+          No account needed. Your work is discarded when you sign out.
+        </p>
+      }
 
       <p class="mt-8 text-center text-sm text-slate-600 dark:text-slate-400">
         New to ContentReview?
@@ -144,6 +150,8 @@ export class LoginPage {
   private readonly errors = inject(ErrorHandlingService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
+  /** Guest sign-in only exists in the mock API, so it is behind a feature flag. */
+  protected readonly guestLogin = inject(APP_CONFIG).features.guestLogin;
 
   /** Query parameters, bound via `withComponentInputBinding()`. */
   readonly reason = input<string>();

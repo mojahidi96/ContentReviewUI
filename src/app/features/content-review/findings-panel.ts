@@ -120,7 +120,10 @@ import { ReviewStore } from './review.store';
           <div>
             <p class="font-medium text-slate-900 dark:text-slate-100">Reviewing your document…</p>
             <p class="text-xs text-slate-600 dark:text-slate-400">
-              Checking spelling, grammar and language. This can take a few seconds.
+              {{ store.progressLabel() ?? 'Submitting your document…' }}
+              @if (store.detectedCount(); as found) {
+                {{ found === 1 ? '1 finding so far.' : found + ' findings so far.' }}
+              }
             </p>
           </div>
         </div>
@@ -143,7 +146,8 @@ import { ReviewStore } from './review.store';
             class="mt-3"
             (click)="store.retry()"
           >
-            <fa-icon [icon]="retryIcon" /> Retry review
+            <fa-icon [icon]="retryIcon" />
+            {{ store.canResume() ? 'Resume review' : 'Retry review' }}
           </button>
         </div>
       }
@@ -240,6 +244,7 @@ import { ReviewStore } from './review.store';
                     (selected)="store.selectFinding(finding.id)"
                     (acceptRequested)="store.accept(finding.id)"
                     (undoRequested)="store.undo(finding.id)"
+                    (dismissRequested)="store.dismiss(finding.id)"
                   />
                 </li>
               }

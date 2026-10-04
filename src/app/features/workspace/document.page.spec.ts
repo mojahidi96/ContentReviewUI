@@ -1,21 +1,30 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { AuthService } from '../../core/auth/auth.service';
-import { TEST_READER, TEST_USER, provideTestHttp } from '../../testing/test-providers';
+import { Router } from '@angular/router';
+import {
+  REVIEW_ID,
+  TEST_READER,
+  TEST_USER,
+  completeReviewFlow,
+  makeFinding,
+  provideTestHttp,
+  reviewBody,
+  signIn,
+} from '../../testing/test-providers';
 import type { User } from '../../core/auth/auth.models';
 import { ReviewStore } from '../content-review/review.store';
 import { DocumentPage } from './document.page';
 import { DocumentService } from './document.service';
 
 describe('DocumentPage', () => {
-  const render = async (user: User) => {
+  const render = async (user: User, reviewParam?: string) => {
     TestBed.configureTestingModule({
       providers: [...provideTestHttp(), DocumentService, ReviewStore],
     });
-    TestBed.inject(AuthService).login({ email: 'a@b.co', password: 'x' }).subscribe();
-    TestBed.inject(HttpTestingController).expectOne('/api/v1/auth/login').flush({ user });
+    signIn(user);
     TestBed.inject(DocumentService).setContent('Quarterly report text.');
     const fixture = TestBed.createComponent(DocumentPage);
+    if (reviewParam) fixture.componentRef.setInput('review', reviewParam);
     await fixture.whenStable();
     return fixture.nativeElement as HTMLElement;
   };
@@ -35,5 +44,28 @@ describe('DocumentPage', () => {
     expect(el.textContent).toContain('Read only');
     expect(el.querySelector('textarea, input, app-findings-panel, app-document-editor')).toBeNull();
     expect(el.querySelectorAll('button')).toHaveLength(0);
+  });
+
+  it('restores the persisted review and its text from ?review= after a reload', async () => {
+    await render(TEST_USER, REVIEW_ID);
+    TestBed.inject(HttpTestingController)
+      .expectOne(`/api/v1/reviews/${REVIEW_ID}`)
+      .flush(reviewBody('The teh end', [makeFinding()], { documentTitle: 'Saved' }));
+    expect(TestBed.inject(ReviewStore).review()?.id).toBe(REVIEW_ID);
+    expect(TestBed.inject(DocumentService).content()).toBe('The teh end');
+    expect(TestBed.inject(DocumentService).title()).toBe('Saved');
+  });
+
+  it('puts the id of a new review into the URL', async () => {
+    await render(TEST_USER);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    TestBed.inject(DocumentService).setContent('The teh end');
+    TestBed.inject(ReviewStore).submit();
+    completeReviewFlow(TestBed.inject(HttpTestingController), 'The teh end', []);
+    TestBed.tick();
+    expect(navigate).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({ queryParams: { review: REVIEW_ID }, replaceUrl: true }),
+    );
   });
 });

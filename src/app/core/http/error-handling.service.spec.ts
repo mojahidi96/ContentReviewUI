@@ -14,8 +14,8 @@ describe('ErrorHandlingService', () => {
   });
 
   it('prefers code overrides, then kind overrides, then defaults', () => {
-    const overrides = { EMAIL_TAKEN: 'by code', conflict: 'by kind' };
-    expect(service().userMessage(http(409, 'EMAIL_TAKEN'), overrides)).toBe('by code');
+    const overrides = { EMAIL_ALREADY_REGISTERED: 'by code', conflict: 'by kind' };
+    expect(service().userMessage(http(409, 'EMAIL_ALREADY_REGISTERED'), overrides)).toBe('by code');
     expect(service().userMessage(http(409, 'OTHER'), overrides)).toBe('by kind');
     expect(service().userMessage(http(0))).toMatch(/could not reach the server/i);
   });

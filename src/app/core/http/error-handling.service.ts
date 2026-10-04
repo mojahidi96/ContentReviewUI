@@ -14,7 +14,16 @@ const DEFAULT_MESSAGES: Readonly<Record<ApiError['kind'], string>> = {
   validation: 'Some of the submitted information is invalid.',
   rate_limited: 'Too many requests. Please wait a moment and try again.',
   server: 'Something went wrong on our side. Please try again shortly.',
+  invalid_response: 'The server sent a response we could not understand. Please try again.',
   unknown: 'Something unexpected happened. Please try again.',
+};
+
+/** Node codes whose HTTP status alone would produce misleading copy. */
+const DEFAULT_CODE_MESSAGES: Readonly<Record<string, string>> = {
+  CSRF_INVALID: 'Your security token has expired. Refresh the page and try again.',
+  ORIGIN_NOT_ALLOWED: 'This site is not allowed to talk to the review service.',
+  PAYLOAD_TOO_LARGE: 'The request is too large. Shorten the document and try again.',
+  MALFORMED_JSON: 'Something unexpected happened. Please try again.',
 };
 
 /**
@@ -30,7 +39,9 @@ export class ErrorHandlingService {
   userMessage(error: unknown, overrides: ErrorMessageOverrides = {}): string {
     const apiError = toApiError(error);
     return (
-      (apiError.code ? overrides[apiError.code] : undefined) ??
+      (apiError.code
+        ? (overrides[apiError.code] ?? DEFAULT_CODE_MESSAGES[apiError.code])
+        : undefined) ??
       overrides[apiError.kind] ??
       DEFAULT_MESSAGES[apiError.kind]
     );

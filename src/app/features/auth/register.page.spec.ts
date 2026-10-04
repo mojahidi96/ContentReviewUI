@@ -1,7 +1,7 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { TEST_USER, provideTestHttp } from '../../testing/test-providers';
+import { TEST_USER, flushCsrf, provideTestHttp, toUserDto } from '../../testing/test-providers';
 import { RegisterPage } from './register.page';
 
 describe('RegisterPage', () => {
@@ -74,14 +74,18 @@ describe('RegisterPage', () => {
   it('registers and navigates to the workspace', async () => {
     fillValid();
     await submit();
+    flushCsrf(http);
     const req = http.expectOne('/api/v1/auth/register');
     expect(req.request.body).toEqual({
-      fullName: 'Ada Lovelace',
+      displayName: 'Ada Lovelace',
       email: 'ada@example.com',
       password: 'Str0ng!Passw0rd',
     });
     expect(req.request.body).not.toHaveProperty('confirmPassword');
-    req.flush({ user: TEST_USER }, { status: 201, statusText: 'Created' });
+    req.flush(
+      { user: toUserDto(TEST_USER), csrfToken: 't' },
+      { status: 201, statusText: 'Created' },
+    );
     await fixture.whenStable();
     expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace');
   });
@@ -89,10 +93,11 @@ describe('RegisterPage', () => {
   it('flags a duplicate email on the email field', async () => {
     fillValid();
     await submit();
+    flushCsrf(http);
     http
       .expectOne('/api/v1/auth/register')
       .flush(
-        { error: { code: 'EMAIL_TAKEN', message: 'x' } },
+        { error: { code: 'EMAIL_ALREADY_REGISTERED', message: 'x' } },
         { status: 409, statusText: 'Conflict' },
       );
     await fixture.whenStable();
@@ -105,18 +110,19 @@ describe('RegisterPage', () => {
     expect(el.querySelector('#register-email-error')).toBeNull();
   });
 
-  it('maps server field errors onto controls', async () => {
+  it('maps Node validation details onto controls (displayName → full name)', async () => {
     fillValid();
     await submit();
+    flushCsrf(http);
     http.expectOne('/api/v1/auth/register').flush(
       {
         error: {
           code: 'VALIDATION_FAILED',
           message: 'x',
-          fieldErrors: { fullName: 'Name is not allowed.' },
+          details: [{ path: 'body.displayName', message: 'Name is not allowed.' }],
         },
       },
-      { status: 422, statusText: 'Unprocessable' },
+      { status: 400, statusText: 'Bad Request' },
     );
     await fixture.whenStable();
     expect(el.textContent).toContain('Name is not allowed.');

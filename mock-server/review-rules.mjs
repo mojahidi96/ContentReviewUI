@@ -1,7 +1,8 @@
 /**
  * Deterministic stand-in for the LLM review pipeline. It only exists so the UI can be
- * demoed and tested end-to-end without the Python service. Offsets are UTF-16 code unit
- * indices into the submitted content, matching the API contract.
+ * demoed and tested end-to-end without the Node and Python services. Findings use Node's
+ * public shape: `startOffset`/`endOffset` are Unicode code point indexes (half-open), so
+ * `Array.from(content).slice(start, end).join('') === originalText`.
  */
 
 const SPELLING = {
@@ -103,24 +104,36 @@ function preserveCase(original, replacement) {
   return replacement;
 }
 
+/** UTF-16 index → code point index. */
+function toCodePoint(content, utf16Index) {
+  return Array.from(content.slice(0, utf16Index)).length;
+}
+
 /**
  * @param {string} content
+ * @param {readonly string[]} categories subset of grammar, spelling, profanity
  * @param {() => string} newId
  */
-export function analyze(content, newId) {
+export function analyze(content, categories, newId) {
+  const wanted = new Set(categories);
+  const now = new Date().toISOString();
   const findings = [];
-  const push = (category, severity, start, end, suggestion, explanation) =>
+  const push = (category, severity, start, end, suggestion, explanation) => {
+    if (!wanted.has(category)) return;
     findings.push({
-      id: newId(),
+      findingId: newId(),
       category,
       severity,
-      excerpt: content.slice(start, end),
-      ...(suggestion ? { suggestion } : {}),
+      originalText: content.slice(start, end),
+      suggestedText: suggestion ?? '',
       explanation,
-      range: { start, end },
+      startOffset: toCodePoint(content, start),
+      endOffset: toCodePoint(content, end),
       status: 'pending',
+      createdAt: now,
+      updatedAt: now,
     });
-
+  };
   const wordRe = /[A-Za-z]+/g;
   for (let m; (m = wordRe.exec(content));) {
     const fix = SPELLING[m[0].toLowerCase()];
@@ -154,7 +167,7 @@ export function analyze(content, newId) {
     const re = new RegExp(`\\b${term.replace(/ /g, '\\s+')}\\b`, 'gi');
     for (let m; (m = re.exec(content));) {
       push(
-        'vulgar_language',
+        'profanity',
         severity,
         m.index,
         m.index + m[0].length,
@@ -166,5 +179,5 @@ export function analyze(content, newId) {
     }
   }
 
-  return findings.sort((a, b) => a.range.start - b.range.start || a.range.end - b.range.end);
+  return findings.sort((a, b) => a.startOffset - b.startOffset || a.endOffset - b.endOffset);
 }

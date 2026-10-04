@@ -1,6 +1,14 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { makeFinding, makeReview, provideTestHttp } from '../../testing/test-providers';
+import {
+  FakeEventSource,
+  REVIEW_ID,
+  completeReviewFlow,
+  findingToDto,
+  flushCsrf,
+  makeFinding,
+  provideTestHttp,
+} from '../../testing/test-providers';
 import { DocumentService } from '../workspace/document.service';
 import { FindingsPanel } from './findings-panel';
 import { ReviewStore } from './review.store';
@@ -40,6 +48,7 @@ describe('FindingsPanel', () => {
     expect(el.textContent).toContain('Reviewing your document');
     expect(el.querySelector('[aria-busy="true"]')).not.toBeNull();
 
+    flushCsrf(http);
     http.expectOne('/api/v1/reviews').flush(null, { status: 504, statusText: 'Gateway Timeout' });
     await fixture.whenStable();
     expect(el.querySelector('[role=alert]')?.textContent).toContain('Review failed');
@@ -48,7 +57,7 @@ describe('FindingsPanel', () => {
 
     button('Retry review')!.click();
     await fixture.whenStable();
-    http.expectOne('/api/v1/reviews').flush(makeReview('the teh cat', [makeFinding()]));
+    completeReviewFlow(http, 'the teh cat', [makeFinding()]);
     await fixture.whenStable();
     expect(el.querySelector('[role=alert]')).toBeNull();
     expect(el.textContent).toContain('1 total');
@@ -57,14 +66,14 @@ describe('FindingsPanel', () => {
 
   it('shows an empty state when the review finds nothing', async () => {
     TestBed.inject(ReviewStore).submit();
-    http.expectOne('/api/v1/reviews').flush(makeReview('the teh cat', []));
+    completeReviewFlow(http, 'the teh cat', []);
     await fixture.whenStable();
     expect(el.textContent).toContain('No issues found');
   });
 
   const showReview = async (findings = [makeFinding()]) => {
     TestBed.inject(ReviewStore).submit();
-    http.expectOne('/api/v1/reviews').flush(makeReview('the teh cat', findings));
+    completeReviewFlow(http, 'the teh cat', findings);
     await fixture.whenStable();
   };
 
@@ -99,9 +108,12 @@ describe('FindingsPanel', () => {
       .find((b) => b.textContent?.includes('Save Changes'))!
       .dispatchEvent(new MouseEvent('click'));
     await fixture.whenStable();
-    http
-      .expectOne({ method: 'PATCH', url: '/api/v1/reviews/rev_1/findings/fnd_1' })
-      .flush(makeFinding({ status: 'resolved' }));
+    const patch = http.expectOne({
+      method: 'PATCH',
+      url: `/api/v1/reviews/${REVIEW_ID}/findings/fnd_1`,
+    });
+    expect(patch.request.body).toEqual({ status: 'accepted' });
+    patch.flush({ finding: findingToDto(makeFinding({ status: 'accepted' })) });
     await fixture.whenStable();
     expect(el.textContent).toContain('Resolved');
     expect(button('Undo')).toBeUndefined();
@@ -128,5 +140,43 @@ describe('FindingsPanel', () => {
     await fixture.whenStable();
     expect(el.textContent).toContain('The document has changed since this review');
     expect(button('Accept')!.disabled).toBe(true);
+  });
+
+  it('shows the server-reported stage while the review runs', async () => {
+    TestBed.inject(ReviewStore).submit();
+    flushCsrf(http);
+    http
+      .expectOne('/api/v1/reviews')
+      .flush(
+        { reviewId: REVIEW_ID, status: 'pending', eventsUrl: '', createdAt: '' },
+        { status: 202, statusText: 'Accepted' },
+      );
+    await fixture.whenStable();
+    expect(el.textContent).toContain('Submitting your document');
+
+    FakeEventSource.latest().emit('review.progress', 1, {
+      reviewId: REVIEW_ID,
+      stage: 'analyzing',
+      attempt: 1,
+      occurredAt: '',
+    });
+    await fixture.whenStable();
+    expect(el.textContent).toContain('Checking spelling, grammar and language');
+    FakeEventSource.latest().close();
+  });
+
+  it('dismisses a finding from its card', async () => {
+    await showReview();
+    button('Dismiss')!.click();
+    await fixture.whenStable();
+    const patch = http.expectOne(`/api/v1/reviews/${REVIEW_ID}/findings/fnd_1`);
+    expect(patch.request.body).toEqual({ status: 'dismissed' });
+    patch.flush({ finding: findingToDto(makeFinding({ status: 'dismissed' })) });
+    await fixture.whenStable();
+    expect(el.textContent).toContain('Dismissed');
+    const dismissButtons = [...el.querySelectorAll('button')].filter(
+      (b) => b.textContent?.trim() === 'Dismiss',
+    );
+    expect(dismissButtons).toHaveLength(0);
   });
 });

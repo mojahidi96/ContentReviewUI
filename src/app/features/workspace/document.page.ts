@@ -1,12 +1,17 @@
-import { Component, inject } from '@angular/core';
+import { Component, OnInit, effect, inject, input, untracked } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
 import { FindingsPanel } from '../content-review/findings-panel';
+import { ReviewStore } from '../content-review/review.store';
 import { DocumentEditor } from './document-editor';
 import { ReadOnlyDocument } from './read-only-document';
 
 /**
  * Default workspace view. Authors get the editor next to its review findings; everyone else
  * only sees the document as read-only text.
+ *
+ * The open review's id is mirrored into `?review=<id>`, so a reload restores the persisted
+ * review (and its text) from Node instead of losing it.
  */
 @Component({
   selector: 'app-document-page',
@@ -28,6 +33,33 @@ import { ReadOnlyDocument } from './read-only-document';
     }
   `,
 })
-export class DocumentPage {
+export class DocumentPage implements OnInit {
   protected readonly auth = inject(AuthService);
+  private readonly store = inject(ReviewStore);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  /** `?review=` query parameter, bound via `withComponentInputBinding()`. */
+  readonly review = input<string>();
+
+  constructor() {
+    effect(() => {
+      const id = this.store.currentReviewId();
+      if (id && id !== untracked(this.review)) {
+        void this.router.navigate([], {
+          relativeTo: this.route,
+          queryParams: { review: id },
+          queryParamsHandling: 'merge',
+          replaceUrl: true,
+        });
+      }
+    });
+  }
+
+  ngOnInit(): void {
+    const id = this.review();
+    if (id && this.auth.canEdit() && id !== this.store.currentReviewId()) {
+      this.store.loadReview(id, { restoreDocument: true });
+    }
+  }
 }

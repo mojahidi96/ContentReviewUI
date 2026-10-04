@@ -4,7 +4,13 @@ import { FindingCard } from './finding-card';
 import type { Finding } from './review.models';
 import type { FindingActions } from './review.store';
 
-const NONE: FindingActions = { applied: false, canAccept: false, canUndo: false, note: null };
+const NONE: FindingActions = {
+  applied: false,
+  canAccept: false,
+  canUndo: false,
+  canDismiss: false,
+  note: null,
+};
 
 describe('FindingCard', () => {
   let fixture: ComponentFixture<FindingCard>;
@@ -26,7 +32,7 @@ describe('FindingCard', () => {
   });
 
   it('labels category, severity and status with text, and marks the AI suggestion', async () => {
-    await render(makeFinding({ category: 'vulgar_language', severity: 'high' }));
+    await render(makeFinding({ category: 'profanity', severity: 'high' }));
     expect(el.textContent).toContain('Inappropriate language');
     expect(el.textContent).toContain('High severity');
     expect(el.textContent).toContain('Needs review');
@@ -59,7 +65,7 @@ describe('FindingCard', () => {
     expect(el.textContent).toContain('Brand voice');
   });
 
-  it('always shows Undo before Accept, enabling only the one that applies', async () => {
+  it('shows Dismiss for pending findings and Undo before Accept, enabling only what applies', async () => {
     const accept = vi.fn();
     const undo = vi.fn();
     fixture.componentInstance.acceptRequested.subscribe(accept);
@@ -69,11 +75,16 @@ describe('FindingCard', () => {
         b.textContent!.trim(),
       );
 
-    await render(makeFinding(), { actions: { ...NONE, canAccept: true } });
-    expect(actionLabels()).toEqual(['Undo', 'Accept']);
+    const dismiss = vi.fn();
+    fixture.componentInstance.dismissRequested.subscribe(dismiss);
+
+    await render(makeFinding(), { actions: { ...NONE, canAccept: true, canDismiss: true } });
+    expect(actionLabels()).toEqual(['Dismiss', 'Undo', 'Accept']);
     expect(button('Undo')!.disabled).toBe(true);
     button('Accept')!.click();
     expect(accept).toHaveBeenCalledOnce();
+    button('Dismiss')!.click();
+    expect(dismiss).toHaveBeenCalledOnce();
 
     await render(makeFinding({ status: 'accepted' }), {
       actions: { ...NONE, applied: true, canUndo: true },

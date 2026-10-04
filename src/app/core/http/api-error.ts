@@ -1,6 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TimeoutError } from 'rxjs';
-import type { ApiErrorBody } from '../../shared/models/api.models';
+import type { ApiErrorBody, ApiErrorDetail } from '../../shared/models/api.models';
 
 export type ApiErrorKind =
   | 'network'
@@ -12,6 +12,7 @@ export type ApiErrorKind =
   | 'validation'
   | 'rate_limited'
   | 'server'
+  | 'invalid_response'
   | 'unknown';
 
 /** Normalized, UI-friendly representation of any failure coming out of the HTTP layer. */
@@ -21,9 +22,22 @@ export interface ApiError {
   readonly status: number;
   /** Machine-readable code from the backend envelope, when present. */
   readonly code?: string;
-  /** Backend message. Not guaranteed to be suitable for end users. */
+  /** Backend message. Untrusted: never shown verbatim, only logged/mapped by code. */
   readonly message: string;
+  /** Validation messages from `details`, keyed by body field name (e.g. `email`). */
   readonly fieldErrors?: Readonly<Record<string, string>>;
+  /** Correlation id from the error body or `X-Request-Id` header, for support. */
+  readonly requestId?: string;
+  /** Seconds from `Retry-After` on `429`, when the server sent one. */
+  readonly retryAfterSeconds?: number;
+}
+
+/** Thrown by response mappers when a 2xx body does not match the contract. */
+export class InvalidResponseError extends Error {
+  constructor(what: string) {
+    super(`Unexpected response shape: ${what}`);
+    this.name = 'InvalidResponseError';
+  }
 }
 
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
@@ -45,6 +59,7 @@ function kindForStatus(status: number): ApiErrorKind {
       return 'network';
     case 400:
     case 413:
+    case 415:
     case 422:
       return 'validation';
     case 401:
@@ -83,22 +98,64 @@ export function toApiError(error: unknown): ApiError {
   if (error instanceof TimeoutError) {
     return { kind: 'timeout', status: 0, message: 'The request timed out.' };
   }
+  if (error instanceof InvalidResponseError) {
+    return { kind: 'invalid_response', status: 0, message: error.message };
+  }
   if (error instanceof HttpErrorResponse) {
     const body: unknown = error.error;
+    const headerRequestId = error.headers?.get('X-Request-Id') ?? undefined;
+    const retryAfterSeconds = parseRetryAfter(error.headers?.get('Retry-After') ?? null);
+    const common = {
+      kind: kindForStatus(error.status),
+      status: error.status,
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+    };
     if (isApiErrorBody(body)) {
+      const fieldErrors = toFieldErrors(body.error.details);
+      const requestId = body.error.requestId ?? headerRequestId;
       return {
-        kind: kindForStatus(error.status),
-        status: error.status,
+        ...common,
         code: body.error.code,
         message: body.error.message,
-        fieldErrors: body.error.fieldErrors,
+        ...(fieldErrors ? { fieldErrors } : {}),
+        ...(requestId ? { requestId } : {}),
       };
     }
-    return { kind: kindForStatus(error.status), status: error.status, message: error.message };
+    return {
+      ...common,
+      message: error.message,
+      ...(headerRequestId ? { requestId: headerRequestId } : {}),
+    };
   }
   return {
     kind: 'unknown',
     status: 0,
     message: error instanceof Error ? error.message : 'Unexpected error',
   };
+}
+
+/** Keeps the first message per body field; `body.email` → `email`. Non-body paths are dropped. */
+function toFieldErrors(
+  details: readonly ApiErrorDetail[] | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (!Array.isArray(details)) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const detail of details) {
+    if (typeof detail?.path !== 'string' || typeof detail.message !== 'string') continue;
+    const [location, field] = detail.path.split('.');
+    if (location === 'body' && field && !(field in result)) {
+      result[field] = detail.message;
+    }
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+/** `Retry-After` as delta-seconds (Node's rate limiter never sends an HTTP date). */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null || !/^\d{1,6}$/.test(value.trim())) {
+    return undefined;
+  }
+  return Number(value.trim());
 }
