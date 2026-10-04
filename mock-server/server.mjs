@@ -6,6 +6,8 @@
  *
  * Environment variables:
  *   PORT                       (default 3000)
+ *   HOST                       interface to bind (default localhost, so the mock and its public
+ *                              demo accounts are not reachable from the network)
  *   MOCK_LATENCY_MS            base latency for every response (default 300)
  *   MOCK_REVIEW_LATENCY_MS     extra latency for review creation (default 1200)
  *   MOCK_REVIEW_FAILURE_RATE   0..1 probability that POST /reviews returns 503 (default 0)
@@ -18,6 +20,7 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import { analyze } from './review-rules.mjs';
 
 const PORT = Number(process.env.PORT ?? 3000);
+const HOST = process.env.HOST ?? 'localhost';
 const LATENCY_MS = Number(process.env.MOCK_LATENCY_MS ?? 300);
 const REVIEW_LATENCY_MS = Number(process.env.MOCK_REVIEW_LATENCY_MS ?? 1200);
 const FAILURE_RATE = Number(process.env.MOCK_REVIEW_FAILURE_RATE ?? 0);
@@ -47,6 +50,9 @@ function verifyPassword(password, user) {
   const candidate = scryptSync(password, user.salt, 64);
   return timingSafeEqual(candidate, Buffer.from(user.hash, 'hex'));
 }
+
+/** Compared against when the email is unknown, so response time doesn't reveal which emails exist. */
+const DUMMY_CREDENTIALS = hashPassword(randomBytes(16).toString('hex'));
 
 /**
  * Roles: an `author` can edit content and run/act on reviews; a `reader` only gets read-only
@@ -161,7 +167,9 @@ api.post('/auth/register', (req, res) => {
 api.post('/auth/login', (req, res) => {
   const { email, password } = req.body ?? {};
   const user = typeof email === 'string' ? usersByEmail.get(email.toLowerCase()) : undefined;
-  if (!user || typeof password !== 'string' || !verifyPassword(password, user)) {
+  const passwordOk =
+    typeof password === 'string' && verifyPassword(password, user ?? DUMMY_CREDENTIALS);
+  if (!user || !passwordOk) {
     return fail(res, 401, 'INVALID_CREDENTIALS', 'Email or password is incorrect.');
   }
   startSession(res, user);
@@ -270,8 +278,8 @@ app.use((err, _req, res, _next) => {
   fail(res, 500, 'INTERNAL', 'Unexpected server error.');
 });
 
-app.listen(PORT, () => {
-  console.log(`Mock ContentReviewService listening on http://localhost:${PORT}/api/v1`);
+app.listen(PORT, HOST, () => {
+  console.log(`Mock ContentReviewService listening on http://${HOST}:${PORT}/api/v1`);
   console.log('Demo author:      demo@example.com / Demo!Passw0rd2026');
   console.log('Demo read-only:   reader@example.com / Reader!Passw0rd2026');
 });

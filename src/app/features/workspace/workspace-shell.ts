@@ -81,11 +81,12 @@ function readCollapsedPreference(): boolean {
       </aside>
 
       <!-- Read-only users have nothing focusable in the content, so the scroll area itself
-           takes focus to stay keyboard-scrollable. -->
+           takes focus to stay keyboard-scrollable. The "relative" class keeps absolutely positioned
+           descendants (e.g. sr-only text) inside this scroll area instead of stretching the page. -->
       <main
         id="main-content"
         [attr.tabindex]="auth.canEdit() ? -1 : 0"
-        class="min-w-0 flex-1 overflow-y-auto focus:outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
+        class="relative min-w-0 flex-1 overflow-y-auto focus:outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
       >
         <router-outlet />
       </main>

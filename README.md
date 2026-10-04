@@ -136,6 +136,8 @@ More detail is in [docs/architecture.md](docs/architecture.md), including the se
 - Route guards only improve the UX. **The backend authorizes every request**, and reviews are scoped to their owner.
 - The Angular app never calls the Python LLM service. Only the Node service does.
 - Document content is never rendered as HTML.
+- Roles are enforced by the API (`403 FORBIDDEN` for read-only users); hiding controls in the UI is only a convenience.
+- The **mock API is for local development only**. It binds to `localhost` by default because its demo credentials are public, and it compares passwords in constant time for unknown emails too, so login timing doesn't reveal which accounts exist. It has no rate limiting or security headers; the real backend must provide login rate limiting, a Content-Security-Policy (allowing the small inline theme script in `src/index.html` by hash, plus Google Fonts) and the usual hardening headers.
 
 ## Testing
 
