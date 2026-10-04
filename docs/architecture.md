@@ -85,6 +85,7 @@ submit() ─► validate (non-empty, ≤ maxChars) ─► requests$.next(api.cre
 | Error leakage | Backend messages are never displayed. Error codes map to fixed UI copy. |
 | Guards | Route guards are a UX convenience. The backend authorizes every request. |
 | Roles | `User.role` is `author` or `reader`; anything but `author` is treated as read-only (`AuthService.canEdit`). Readers get a read-only document view, no review tools, and `authorGuard` keeps them off authoring routes. The API returns `403 FORBIDDEN` for reader writes. |
+| Guests | "Continue as guest" on the sign-in page calls `POST /auth/guest` (`AuthService.continueAsGuest`), which issues a normal session cookie for a temporary `author` account flagged `guest: true`. The server deletes it and its reviews when the session ends. |
 | Secrets | There are none in the frontend. The environment files hold only public configuration. |
 
 ## Accessibility

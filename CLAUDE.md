@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Single test by name: add `--filter "part of the test name"`.
 - `npm run format` — Prettier for `src/**` and `mock-server/**` only (README and `docs/` are not Prettier-formatted).
 
-Demo accounts (seeded in `mock-server/server.mjs`): `demo@example.com` / `Demo!Passw0rd2026` (author) and `reader@example.com` / `Reader!Passw0rd2026` (read-only). Self-registered accounts are authors. Mock sessions expire after 30 minutes; `.env.example` lists knobs such as `MOCK_REVIEW_FAILURE_RATE` and `MOCK_SESSION_TTL_MS`.
+Demo accounts (seeded in `mock-server/server.mjs`): `demo@example.com` / `Demo!Passw0rd2026` (author) and `reader@example.com` / `Reader!Passw0rd2026` (read-only). Self-registered accounts are authors. "Continue as guest" (`POST /auth/guest`) creates a temporary author flagged `guest: true` that is deleted, with its reviews, when the session ends. Mock sessions expire after 30 minutes; `.env.example` lists knobs such as `MOCK_REVIEW_FAILURE_RATE` and `MOCK_SESSION_TTL_MS`.
 
 ## Architecture
 

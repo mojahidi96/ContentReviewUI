@@ -37,6 +37,12 @@ const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // ---------------------------------------------------------------- storage
 /** @type {Map<string, {id:string, fullName:string, email:string, role:'author'|'reader', salt:string, hash:string}>} */
 const usersByEmail = new Map();
+/**
+ * Temporary guest accounts, keyed by id. They have no credentials and are deleted together with
+ * their reviews when the guest signs out or the session expires.
+ * @type {Map<string, {id:string, fullName:string, email:string, role:'author', guest:true}>}
+ */
+const guestUsers = new Map();
 /** @type {Map<string, {userId:string, expiresAt:number}>} */
 const sessions = new Map();
 /** @type {Map<string, any>} */
@@ -73,7 +79,13 @@ function addUser(fullName, email, password, role = 'author') {
 addUser('Demo Reviewer', 'demo@example.com', 'Demo!Passw0rd2026', 'author');
 addUser('Riley Reader', 'reader@example.com', 'Reader!Passw0rd2026', 'reader');
 
-const publicUser = ({ id, fullName, email, role }) => ({ id, fullName, email, role });
+const publicUser = ({ id, fullName, email, role, guest }) => ({
+  id,
+  fullName,
+  email,
+  role,
+  ...(guest ? { guest: true } : {}),
+});
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fail = (res, status, code, message, fieldErrors) =>
   res.status(status).json({ error: { code, message, ...(fieldErrors ? { fieldErrors } : {}) } });
@@ -117,15 +129,30 @@ function startSession(res, user) {
   });
 }
 
+/** Ends a session; a guest's account and reviews go with it. */
+function endSession(sid) {
+  const session = sessions.get(sid);
+  sessions.delete(sid);
+  if (session && guestUsers.delete(session.userId)) {
+    for (const [id, review] of reviews) {
+      if (review.ownerId === session.userId) reviews.delete(id);
+    }
+  }
+}
+
 function currentUser(req) {
   const sid = req.cookies[SESSION_COOKIE];
   const session = sid && sessions.get(sid);
   if (!session) return null;
   if (session.expiresAt < Date.now()) {
-    sessions.delete(sid);
+    endSession(sid);
     return null;
   }
-  return [...usersByEmail.values()].find((u) => u.id === session.userId) ?? null;
+  return (
+    guestUsers.get(session.userId) ??
+    [...usersByEmail.values()].find((u) => u.id === session.userId) ??
+    null
+  );
 }
 
 function requireAuth(req, res, next) {
@@ -176,8 +203,22 @@ api.post('/auth/login', (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+/** Starts a session for a new temporary guest author. No credentials are needed. */
+api.post('/auth/guest', (_req, res) => {
+  const user = {
+    id: `usr_guest_${randomUUID()}`,
+    fullName: 'Guest User',
+    email: '',
+    role: 'author',
+    guest: true,
+  };
+  guestUsers.set(user.id, user);
+  startSession(res, user);
+  res.status(201).json({ user: publicUser(user) });
+});
+
 api.post('/auth/logout', (req, res) => {
-  sessions.delete(req.cookies[SESSION_COOKIE]);
+  endSession(req.cookies[SESSION_COOKIE]);
   res.clearCookie(SESSION_COOKIE, { path: '/api' });
   res.status(204).end();
 });
@@ -282,4 +323,5 @@ app.listen(PORT, HOST, () => {
   console.log(`Mock ContentReviewService listening on http://${HOST}:${PORT}/api/v1`);
   console.log('Demo author:      demo@example.com / Demo!Passw0rd2026');
   console.log('Demo read-only:   reader@example.com / Reader!Passw0rd2026');
+  console.log('Guest:            "Continue as guest" on the sign-in page (no credentials)');
 });

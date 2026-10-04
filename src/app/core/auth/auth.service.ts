@@ -52,6 +52,16 @@ export class AuthService {
       );
   }
 
+  /** Starts a temporary guest session; no credentials needed. */
+  continueAsGuest(): Observable<User> {
+    return this.http
+      .post<AuthResponse>(`${this.baseUrl}/guest`, null, { context: this.expectedAuthFailure() })
+      .pipe(
+        map(({ user }) => user),
+        tap((user) => this.setUser(user)),
+      );
+  }
+
   register(request: RegisterRequest): Observable<User> {
     return this.http
       .post<AuthResponse>(`${this.baseUrl}/register`, request, {

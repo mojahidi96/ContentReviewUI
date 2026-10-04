@@ -54,6 +54,18 @@ describe('AuthService', () => {
     expect(JSON.stringify(localStorage)).not.toContain('ada@example.com');
   });
 
+  it('starts a guest session without credentials', async () => {
+    const guest = { ...TEST_USER, id: 'usr_guest_1', email: '', guest: true as const };
+    const result = firstValueFrom(auth.continueAsGuest());
+    const req = http.expectOne('/api/v1/auth/guest');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.withCredentials).toBe(true);
+    req.flush({ user: guest });
+    expect(await result).toEqual(guest);
+    expect(auth.isAuthenticated()).toBe(true);
+    expect(auth.canEdit()).toBe(true);
+  });
+
   it('propagates invalid credentials to the caller', async () => {
     const result = firstValueFrom(auth.login({ email: 'a@b.co', password: 'x' }));
     http

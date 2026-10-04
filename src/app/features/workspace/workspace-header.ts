@@ -63,7 +63,9 @@ import { Spinner } from '../../shared/components/spinner';
             <p class="text-sm font-medium text-slate-900 dark:text-slate-100">
               {{ user.fullName }}
             </p>
-            <p class="text-xs text-slate-600 dark:text-slate-400">{{ user.email }}</p>
+            <p class="text-xs text-slate-600 dark:text-slate-400">
+              {{ user.guest ? 'Temporary session' : user.email }}
+            </p>
           </div>
           <span class="sr-only md:hidden">Signed in as {{ user.fullName }}</span>
           <span class="sr-only sm:hidden">, {{ roleLabel() }}</span>

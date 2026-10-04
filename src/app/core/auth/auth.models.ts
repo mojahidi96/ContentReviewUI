@@ -6,6 +6,8 @@ export interface User {
   readonly fullName: string;
   readonly email: string;
   readonly role: UserRole;
+  /** Present on temporary guest accounts, which have no email and are deleted on sign-out. */
+  readonly guest?: true;
 }
 
 export interface LoginRequest {
@@ -19,7 +21,7 @@ export interface RegisterRequest {
   readonly password: string;
 }
 
-/** Body of `POST /auth/login`, `POST /auth/register` and `GET /auth/me`. */
+/** Body of `POST /auth/login`, `POST /auth/register`, `POST /auth/guest` and `GET /auth/me`. */
 export interface AuthResponse {
   readonly user: User;
 }
