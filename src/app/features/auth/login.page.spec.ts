@@ -106,6 +106,46 @@ describe('LoginPage', () => {
     expect(el.querySelector('[role=alert]')?.textContent).toContain('could not reach the server');
   });
 
+  describe('guest access', () => {
+    const guestButton = () => el.querySelector<HTMLButtonElement>('[data-testid=guest-login]')!;
+    const guest = {
+      ...TEST_USER,
+      id: 'usr_guest_1',
+      fullName: 'Guest User',
+      email: '',
+      guest: true as const,
+    };
+
+    it('signs in as a guest without credentials and navigates to the return URL', async () => {
+      fixture.componentRef.setInput('returnUrl', '/workspace/history');
+      guestButton().click();
+      await fixture.whenStable();
+
+      expect(guestButton().disabled).toBe(true);
+      expect(submitButton().disabled).toBe(true);
+      expect(guestButton().textContent).toContain('Starting guest session');
+      guestButton().click(); // ignored while pending
+
+      const req = http.expectOne('/api/v1/auth/guest');
+      expect(req.request.method).toBe('POST');
+      req.flush({ user: guest });
+      await fixture.whenStable();
+
+      expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/history');
+      expect(guestButton().disabled).toBe(false);
+      expect(el.textContent).not.toContain('Enter your email address.');
+    });
+
+    it('reports a failed guest sign-in', async () => {
+      guestButton().click();
+      await fixture.whenStable();
+      http.expectOne('/api/v1/auth/guest').flush(null, { status: 500, statusText: 'Error' });
+      await fixture.whenStable();
+      expect(el.querySelector('[role=alert]')?.textContent).toContain('Something went wrong');
+      expect(router.navigateByUrl).not.toHaveBeenCalled();
+    });
+  });
+
   it('explains when the session has expired', async () => {
     fixture.componentRef.setInput('reason', 'session-expired');
     await fixture.whenStable();

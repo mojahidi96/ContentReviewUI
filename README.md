@@ -56,7 +56,7 @@ Open http://localhost:4200 and sign in with the demo account:
 | `demo@example.com` | `Demo!Passw0rd2026` | **Author**: edits the document, runs reviews, accepts and saves changes |
 | `reader@example.com` | `Reader!Passw0rd2026` | **Read only**: sees the document text only |
 
-You can also register a new account (new accounts are authors). The mock keeps data in memory, so a restart clears registered users, sessions and reviews.
+You can also register a new account (new accounts are authors), or click **Continue as guest** to start a temporary author session with no credentials; the guest account and its reviews are deleted when you sign out or the session expires. The mock keeps data in memory, so a restart clears registered users, sessions and reviews.
 
 ### Scripts
 

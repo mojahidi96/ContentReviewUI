@@ -3,9 +3,9 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
-import { faCircleExclamation, faClock } from '@fortawesome/free-solid-svg-icons';
-import { Subject, catchError, exhaustMap, map, of } from 'rxjs';
-import type { LoginRequest } from '../../core/auth/auth.models';
+import { faCircleExclamation, faClock, faUserSecret } from '@fortawesome/free-solid-svg-icons';
+import { Observable, Subject, catchError, exhaustMap, map, of } from 'rxjs';
+import type { User } from '../../core/auth/auth.models';
 import { AuthService } from '../../core/auth/auth.service';
 import { safeReturnUrl } from '../../core/auth/return-url';
 import { ErrorHandlingService } from '../../core/http/error-handling.service';
@@ -89,7 +89,7 @@ const LOGIN_ERRORS = {
         </app-form-field>
 
         <button type="submit" appButton size="lg" class="w-full" [disabled]="pending()">
-          @if (pending()) {
+          @if (pendingAction() === 'login') {
             <app-spinner />
             Signing in…
           } @else {
@@ -97,6 +97,35 @@ const LOGIN_ERRORS = {
           }
         </button>
       </form>
+
+      <div class="my-6 flex items-center gap-3" aria-hidden="true">
+        <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+        <span class="text-xs text-slate-600 uppercase dark:text-slate-400">or</span>
+        <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+      </div>
+
+      <button
+        type="button"
+        appButton
+        variant="secondary"
+        size="lg"
+        class="w-full"
+        data-testid="guest-login"
+        aria-describedby="guest-login-hint"
+        [disabled]="pending()"
+        (click)="continueAsGuest()"
+      >
+        @if (pendingAction() === 'guest') {
+          <app-spinner />
+          Starting guest session…
+        } @else {
+          <fa-icon [icon]="guestIcon" />
+          Continue as guest
+        }
+      </button>
+      <p id="guest-login-hint" class="mt-2 text-center text-xs text-slate-600 dark:text-slate-400">
+        No account needed. Your work is discarded when you sign out.
+      </p>
 
       <p class="mt-8 text-center text-sm text-slate-600 dark:text-slate-400">
         New to ContentReview?
@@ -128,7 +157,9 @@ export class LoginPage {
     password: new FormControl('', { nonNullable: true, validators: [Validators.required] }),
   });
 
-  protected readonly pending = signal(false);
+  /** Which sign-in is in flight; both buttons are disabled while either runs. */
+  protected readonly pendingAction = signal<'login' | 'guest' | null>(null);
+  protected readonly pending = computed(() => this.pendingAction() !== null);
   protected readonly submitted = signal(false);
   protected readonly serverError = signal<string | null>(null);
   protected readonly sessionExpired = computed(
@@ -138,16 +169,17 @@ export class LoginPage {
   protected readonly inputClasses = INPUT_CLASSES;
   protected readonly errorIcon = faCircleExclamation;
   protected readonly clockIcon = faClock;
+  protected readonly guestIcon = faUserSecret;
   protected readonly describe = describedBy;
 
-  private readonly submissions = new Subject<LoginRequest>();
+  private readonly submissions = new Subject<() => Observable<User>>();
 
   constructor() {
     // exhaustMap ignores further submissions while one is in flight.
     this.submissions
       .pipe(
-        exhaustMap((request) =>
-          this.auth.login(request).pipe(
+        exhaustMap((signIn) =>
+          signIn().pipe(
             map(() => null),
             catchError((error: unknown) => of(this.errors.userMessage(error, LOGIN_ERRORS))),
           ),
@@ -155,7 +187,7 @@ export class LoginPage {
         takeUntilDestroyed(),
       )
       .subscribe((error) => {
-        this.pending.set(false);
+        this.pendingAction.set(null);
         if (error === null) {
           void this.router.navigateByUrl(safeReturnUrl(this.returnUrl()));
         } else {
@@ -189,9 +221,18 @@ export class LoginPage {
       return;
     }
     this.serverError.set(null);
-    this.pending.set(true);
+    this.pendingAction.set('login');
     const { email, password } = this.form.getRawValue();
-    this.submissions.next({ email: email.trim(), password });
+    this.submissions.next(() => this.auth.login({ email: email.trim(), password }));
+  }
+
+  protected continueAsGuest(): void {
+    if (this.pending()) {
+      return;
+    }
+    this.serverError.set(null);
+    this.pendingAction.set('guest');
+    this.submissions.next(() => this.auth.continueAsGuest());
   }
 
   private shouldShow(control: FormControl<string>): boolean {

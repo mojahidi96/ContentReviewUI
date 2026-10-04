@@ -68,18 +68,22 @@ This returns `201 { "user": User }` and starts a session (it sets `sid`). The pa
 
 This returns `200 { "user": User }` and sets `sid`. A failed login returns `401 INVALID_CREDENTIALS`, with the same response for an unknown email and a wrong password.
 
+### `POST /auth/guest`
+
+No body and no credentials. This creates a temporary guest account (role `author`, `guest: true`, empty `email`), returns `201 { "user": User }` and sets `sid`. A guest account and all of its reviews are deleted when its session ends, through logout or expiry. Like every `POST`, it needs the CSRF header.
+
 ### `POST /auth/logout`
 
-This returns `204` and clears `sid`. It is idempotent.
+This returns `204` and clears `sid`. It is idempotent. Logging out a guest deletes the guest account and its reviews.
 
 ### `GET /auth/me`
 
 This returns `200 { "user": User }`, or `401` when there is no session. The SPA calls it on startup to restore the session.
 
 ```ts
-interface User { id: string; fullName: string; email: string; role: 'author' | 'reader' }
+interface User { id: string; fullName: string; email: string; role: 'author' | 'reader'; guest?: true }
 // author: edits content and creates/updates reviews. reader: read-only.
-// Self-registered accounts are authors.
+// Self-registered accounts are authors. Guest accounts are authors with `guest: true` and email "".
 ```
 
 ## Reviews
