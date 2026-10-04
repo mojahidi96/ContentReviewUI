@@ -1,6 +1,18 @@
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, Subject, catchError, finalize, forkJoin, map, of, switchMap } from 'rxjs';
+import {
+  Observable,
+  Subject,
+  catchError,
+  concat,
+  finalize,
+  forkJoin,
+  map,
+  of,
+  switchMap,
+  throwError,
+  timer,
+} from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
 import { toApiError } from '../../core/http/api-error';
 import {
@@ -10,7 +22,17 @@ import {
 import { NotificationService } from '../../core/notifications/notification.service';
 import { DocumentService } from '../workspace/document.service';
 import { ContentReviewApiService } from './content-review-api.service';
-import type { Finding, FindingCategory, FindingStatus, Review, TextRange } from './review.models';
+import { ReviewEventsService, ReviewStreamClosedError } from './review-events.service';
+import { codePointLength } from './review.mappers';
+import type {
+  Finding,
+  FindingCategory,
+  FindingStatus,
+  ProgressStage,
+  Review,
+  ReviewProgress,
+  TextRange,
+} from './review.models';
 import { applyReplacements, mapRange, normalizeRange, type TextReplacement } from './text-ranges';
 
 export type ReviewPhase = 'idle' | 'loading' | 'success' | 'error';
@@ -25,13 +47,62 @@ export interface FindingFilters {
 
 const ALL_FILTERS: FindingFilters = { category: 'all', status: 'all' };
 
+const UNAVAILABLE =
+  'The review service is temporarily unavailable. Your document has not changed — try again in a moment.';
+
+/**
+ * Fixed copy for request errors and for Node's processing `errorCode`s. Backend messages
+ * (including the `errorMessage` of a failed review) are never shown verbatim.
+ */
 const REVIEW_ERROR_MESSAGES: ErrorMessageOverrides = {
-  CONTENT_EMPTY: 'There is no content to review. Add some text and try again.',
-  CONTENT_TOO_LARGE: 'The document is too long to review in one pass. Shorten it and try again.',
-  REVIEW_UNAVAILABLE:
-    'The review service is temporarily unavailable. Your document has not changed — try again in a moment.',
+  VALIDATION_FAILED: 'The review request was rejected. Check the title and content and try again.',
+  PAYLOAD_TOO_LARGE: 'The document is too long to review in one pass. Shorten it and try again.',
   REVIEW_NOT_FOUND: 'That review no longer exists.',
+  LLM_SERVICE_UNAVAILABLE: UNAVAILABLE,
+  LLM_SERVICE_RATE_LIMITED: UNAVAILABLE,
+  LLM_SERVICE_TIMEOUT:
+    'The review took longer than expected. Your document has not changed — please retry.',
+  LLM_INVALID_RESPONSE: 'The review service returned unusable results. Please run it again.',
+  LLM_REQUEST_REJECTED: 'This content could not be reviewed.',
+  PROCESSING_TIMEOUT: 'The review did not finish. Please run it again.',
+  PROCESSING_FAILED: 'The review failed unexpectedly. Please run it again.',
+  REVIEW_INTERRUPTED:
+    'We lost contact with the review while it was running. It may still finish — resume to check.',
+  rate_limited: 'Too many requests. Please wait a moment and try again.',
   timeout: 'The review took longer than expected. Your document has not changed — please retry.',
+};
+
+/** A review that reached `failed` (or `cancelled`) on the server. */
+class ReviewFailedError extends Error {
+  constructor(readonly code: string) {
+    super(`Review failed: ${code}`);
+  }
+}
+
+/** The event stream could not be re-established; the review may still be running. */
+class ReviewInterruptedError extends Error {
+  readonly code = 'REVIEW_INTERRUPTED';
+  constructor(readonly reviewId: string) {
+    super('Review progress was interrupted.');
+  }
+}
+
+const FINDING_ERRORS: ErrorMessageOverrides = {
+  FINDING_NOT_FOUND: 'One of the findings no longer exists on the server.',
+  REVIEW_NOT_FOUND: 'This review no longer exists on the server.',
+  REVIEW_NOT_COMPLETED: 'The review has not finished yet.',
+  INVALID_STATE_TRANSITION: 'That finding can no longer be changed this way.',
+  CONFLICT: 'The finding was changed elsewhere. Reload the review and try again.',
+};
+
+const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+
+const STAGE_LABELS: Record<ProgressStage, string> = {
+  queued: 'Waiting for the review service…',
+  analyzing: 'Checking spelling, grammar and language…',
+  validating: 'Validating findings…',
+  persisting: 'Saving results…',
+  retrying: 'The review service is busy. Retrying…',
 };
 
 /** A suggestion the user accepted in this session. Kept locally until "Save Changes". */
@@ -52,10 +123,19 @@ export interface FindingActions {
   readonly applied: boolean;
   readonly canAccept: boolean;
   readonly canUndo: boolean;
+  /** Dismissing is sent to the server immediately and cannot be reverted to "pending". */
+  readonly canDismiss: boolean;
   readonly note: string | null;
 }
 
-type ReviewResult = { ok: true; review: Review } | { ok: false; error: unknown };
+type FlowEvent =
+  { type: 'progress'; progress: ReviewProgress } | { type: 'review'; review: Review };
+type FlowResult = FlowEvent | { type: 'error'; error: unknown };
+
+export interface LoadReviewOptions {
+  /** Put the reviewed title and text into the editor (used when restoring after a reload). */
+  readonly restoreDocument?: boolean;
+}
 
 /**
  * State and workflow for content review: submission, findings, status updates and applying
@@ -64,6 +144,7 @@ type ReviewResult = { ok: true; review: Review } | { ok: false; error: unknown }
 @Injectable()
 export class ReviewStore {
   private readonly api = inject(ContentReviewApiService);
+  private readonly events = inject(ReviewEventsService);
   private readonly document = inject(DocumentService);
   private readonly config = inject(APP_CONFIG);
   private readonly errors = inject(ErrorHandlingService);
@@ -84,6 +165,14 @@ export class ReviewStore {
   /** Accepted but unsaved changes. Lives as long as the workspace (the signed-in session). */
   private readonly _accepted = signal<readonly AcceptedChange[]>([]);
   private readonly _saving = signal(false);
+  private readonly _dismissing = signal<ReadonlySet<string>>(new Set());
+  /** Server-side progress of the review being run, while `phase` is `loading`. */
+  private readonly _stage = signal<ProgressStage | null>(null);
+  private readonly _detected = signal(0);
+  /** A review whose progress stream was lost; Retry resumes it instead of submitting again. */
+  private readonly _interruptedReviewId = signal<string | null>(null);
+  /** The review being created or loaded, before it reaches a terminal state. */
+  private readonly _trackingId = signal<string | null>(null);
   private readonly _activeFindingId = signal<string | null>(null);
   /** Incremented on every selection so re-selecting the same finding scrolls to it again. */
   private readonly _focusTick = signal(0);
@@ -94,6 +183,14 @@ export class ReviewStore {
   readonly review = this._review.asReadonly();
   readonly acceptedChanges = this._accepted.asReadonly();
   readonly isSaving = this._saving.asReadonly();
+  readonly progressLabel = computed(() => {
+    const stage = this._stage();
+    return stage ? STAGE_LABELS[stage] : null;
+  });
+  readonly detectedCount = this._detected.asReadonly();
+  readonly canResume = computed(() => this._interruptedReviewId() !== null);
+  /** Id of the review shown or being run — what the URL should point at. */
+  readonly currentReviewId = computed(() => this._trackingId() ?? this._review()?.id ?? null);
   readonly activeFindingId = this._activeFindingId.asReadonly();
   readonly focusTick = this._focusTick.asReadonly();
   readonly filters = signal<FindingFilters>(ALL_FILTERS);
@@ -196,49 +293,104 @@ export class ReviewStore {
     return { total: this.findings().length, ...counts };
   });
 
-  /** Every review request goes through here; switchMap drops responses that are no longer wanted. */
-  private readonly requests$ = new Subject<Observable<Review>>();
+  /**
+   * Every review flow goes through here. switchMap cancels the previous flow — including closing
+   * its event stream — so a stale review can never overwrite a newer one.
+   */
+  private readonly flows$ = new Subject<{
+    flow: Observable<FlowEvent>;
+    options: LoadReviewOptions;
+  }>();
 
   constructor() {
-    this.requests$
+    this.flows$
       .pipe(
-        switchMap((request) =>
-          request.pipe(
-            map((review): ReviewResult => ({ ok: true, review })),
-            catchError((error: unknown) => of<ReviewResult>({ ok: false, error })),
+        switchMap(({ flow, options }) =>
+          flow.pipe(
+            map((event): [FlowResult, LoadReviewOptions] => [event, options]),
+            catchError((error: unknown) =>
+              of<[FlowResult, LoadReviewOptions]>([{ type: 'error', error }, options]),
+            ),
           ),
         ),
         takeUntilDestroyed(),
       )
-      .subscribe((result) =>
-        result.ok ? this.showReview(result.review) : this.fail(result.error),
-      );
+      .subscribe(([event, options]) => {
+        switch (event.type) {
+          case 'progress':
+            this.onProgress(event.progress);
+            break;
+          case 'review':
+            this.showReview(event.review, options);
+            break;
+          case 'error':
+            this.fail(event.error);
+            break;
+        }
+      });
   }
 
   /** Reviews whatever text is currently in the editor. */
   submit(): void {
     const content = this.document.content();
     const validationError: ReviewValidationError | null =
-      content.trim().length === 0 ? 'empty' : content.length > this.maxChars ? 'too_long' : null;
+      content.trim().length === 0
+        ? 'empty'
+        : codePointLength(content) > this.maxChars
+          ? 'too_long'
+          : null;
     if (validationError) {
       this._validationError.set(validationError);
       this.clearFailure();
       return;
     }
     this._validationError.set(null);
-    this.startLoading();
-    this.requests$.next(this.api.createReview({ title: this.document.title().trim(), content }));
+    this.startLoading(null);
+    const request = {
+      title: this.document.title().trim() || 'Untitled document',
+      content,
+      categories: this.config.review.categories,
+    };
+    this.flows$.next({
+      flow: this.api.createReview(request).pipe(
+        switchMap((created) => {
+          this._trackingId.set(created.id);
+          return this.followUntilDone(created.id, 0, 0);
+        }),
+      ),
+      options: {},
+    });
   }
 
-  /** Retrying always re-reads the current editor content; nothing in the editor is touched. */
+  /**
+   * After an interrupted stream, resumes the same review (no duplicate review is created).
+   * Otherwise re-reads the current editor content and submits it; the editor is not touched.
+   */
   retry(): void {
-    this.submit();
+    const interrupted = this._interruptedReviewId();
+    if (interrupted) {
+      this.loadReview(interrupted);
+    } else {
+      this.submit();
+    }
   }
 
-  loadReview(reviewId: string): void {
+  /** Opens a stored review; if it is still running, follows it until it finishes. */
+  loadReview(reviewId: string, options: LoadReviewOptions = {}): void {
     this._validationError.set(null);
-    this.startLoading();
-    this.requests$.next(this.api.getReview(reviewId));
+    this.startLoading(reviewId);
+    this.flows$.next({
+      flow: this.api
+        .getReview(reviewId)
+        .pipe(
+          switchMap((review) =>
+            TERMINAL.has(review.status)
+              ? of<FlowEvent>({ type: 'review', review })
+              : this.followUntilDone(reviewId, 0, 0),
+          ),
+        ),
+      options,
+    });
   }
 
   selectFinding(findingId: string | null): void {
@@ -263,9 +415,9 @@ export class ReviewStore {
   actionsFor(finding: Finding): FindingActions {
     const applied = this.acceptedIds().has(finding.id);
     const stale = this.isStale();
-    const busy = this._saving();
+    const busy = this._saving() || this._dismissing().has(finding.id);
     if (applied) {
-      return { applied, canAccept: false, canUndo: !stale && !busy, note: null };
+      return { applied, canAccept: false, canUndo: !stale && !busy, canDismiss: false, note: null };
     }
     let note: string | null = null;
     if (finding.status === 'resolved') {
@@ -278,7 +430,50 @@ export class ReviewStore {
       note = 'Overlaps a change you accepted. Undo that change to accept this one.';
     }
     const canAccept = finding.status !== 'resolved' && note === null && !stale && !busy;
-    return { applied, canAccept, canUndo: false, note };
+    const canDismiss = finding.status === 'pending' && !busy;
+    return { applied, canAccept, canUndo: false, canDismiss, note };
+  }
+
+  /**
+   * Dismisses a finding on the server right away. Node has no transition back to `pending`, so
+   * this is final (a dismissed suggestion can still be accepted later).
+   */
+  dismiss(findingId: string): void {
+    const review = this._review();
+    const finding = this.findings().find((f) => f.id === findingId);
+    if (!review || !finding || !this.actionsFor(finding).canDismiss) {
+      return;
+    }
+    this._dismissing.update((ids) => new Set(ids).add(findingId));
+    this.api
+      .updateFindingStatus(review.id, findingId, 'dismissed', review.content)
+      .pipe(
+        finalize(() =>
+          this._dismissing.update((ids) => {
+            const next = new Set(ids);
+            next.delete(findingId);
+            return next;
+          }),
+        ),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe({
+        next: () => {
+          if (this._review()?.id !== review.id) {
+            return;
+          }
+          this._savedFindings.update((list) =>
+            list.map((f) => (f.id === findingId ? { ...f, status: 'dismissed' } : f)),
+          );
+        },
+        error: (error: unknown) => {
+          if (toApiError(error).kind !== 'unauthorized') {
+            this.notifications.error(
+              `Could not dismiss the finding. ${this.errors.userMessage(error, FINDING_ERRORS)}`,
+            );
+          }
+        },
+      });
   }
 
   /** Applies the suggestion to the document locally. Nothing is sent to the server. */
@@ -316,8 +511,9 @@ export class ReviewStore {
   }
 
   /**
-   * Saves every accepted change by resolving its finding on the server. Afterwards the changes
-   * are part of the reviewed text and can no longer be undone.
+   * Saves every accepted change by marking its finding `accepted` on the server (Node's only
+   * user-settable equivalent). Locally the change becomes part of the reviewed text, shown as
+   * "resolved", and can no longer be undone. Node does not store the edited text itself.
    */
   saveChanges(): void {
     const review = this._review();
@@ -326,7 +522,11 @@ export class ReviewStore {
       return;
     }
     this._saving.set(true);
-    forkJoin(changes.map((c) => this.api.updateFindingStatus(review.id, c.findingId, 'resolved')))
+    forkJoin(
+      changes.map((c) =>
+        this.api.updateFindingStatus(review.id, c.findingId, 'accepted', review.content),
+      ),
+    )
       .pipe(
         finalize(() => this._saving.set(false)),
         takeUntilDestroyed(this.destroyRef),
@@ -350,9 +550,7 @@ export class ReviewStore {
         error: (error: unknown) => {
           if (toApiError(error).kind !== 'unauthorized') {
             this.notifications.error(
-              `Could not save your changes. ${this.errors.userMessage(error, {
-                FINDING_NOT_FOUND: 'One of the findings no longer exists on the server.',
-              })}`,
+              `Could not save your changes. ${this.errors.userMessage(error, FINDING_ERRORS)}`,
             );
           }
         },
@@ -367,12 +565,82 @@ export class ReviewStore {
     }
   }
 
-  private startLoading(): void {
+  private startLoading(trackingId: string | null): void {
     this._phase.set('loading');
     this._error.set(null);
+    this._stage.set(null);
+    this._detected.set(0);
+    this._interruptedReviewId.set(null);
+    this._trackingId.set(trackingId);
   }
 
-  private showReview(review: Review): void {
+  /**
+   * Follows the event stream until a terminal event, then fetches the persisted review (the
+   * authoritative snapshot with content and findings). If the stream drops, it checks the
+   * snapshot and re-subscribes from the last seen event id, up to `maxReconnects` times.
+   */
+  private followUntilDone(
+    reviewId: string,
+    afterEventId: number,
+    attempt: number,
+  ): Observable<FlowEvent> {
+    const { maxReconnects, reconnectDelayMs } = this.config.reviewEvents;
+    const fetchSnapshot = this.api.getReview(reviewId);
+    const resume = (lastEventId: number): Observable<FlowEvent> =>
+      fetchSnapshot.pipe(
+        switchMap((review) => {
+          if (TERMINAL.has(review.status)) {
+            return of<FlowEvent>({ type: 'review', review });
+          }
+          if (attempt >= maxReconnects) {
+            return throwError(() => new ReviewInterruptedError(reviewId));
+          }
+          return this.followUntilDone(reviewId, lastEventId, attempt + 1);
+        }),
+      );
+
+    return concat(
+      this.events
+        .follow(reviewId, afterEventId)
+        .pipe(map((progress): FlowEvent => ({ type: 'progress', progress }))),
+      fetchSnapshot.pipe(map((review): FlowEvent => ({ type: 'review', review }))),
+    ).pipe(
+      catchError((error: unknown) =>
+        error instanceof ReviewStreamClosedError
+          ? timer(reconnectDelayMs).pipe(switchMap(() => resume(error.lastEventId)))
+          : throwError(() => error),
+      ),
+    );
+  }
+
+  private onProgress(progress: ReviewProgress): void {
+    switch (progress.kind) {
+      case 'started':
+        this._stage.set('analyzing');
+        break;
+      case 'progress':
+        this._stage.set(progress.stage);
+        break;
+      case 'finding':
+        this._detected.update((n) => n + 1);
+        break;
+      default:
+        // Terminal events: the snapshot that follows decides what is shown.
+        this._stage.set('persisting');
+    }
+  }
+
+  private showReview(review: Review, options: LoadReviewOptions = {}): void {
+    this._trackingId.set(null);
+    this._stage.set(null);
+    if (review.status !== 'completed') {
+      this.fail(new ReviewFailedError(review.errorCode ?? 'PROCESSING_FAILED'));
+      return;
+    }
+    if (options.restoreDocument) {
+      this.document.setTitle(review.title);
+      this.document.setContent(review.content);
+    }
     this._review.set(review);
     this._savedFindings.set(review.findings);
     this._reviewedText.set(review.content);
@@ -395,8 +663,19 @@ export class ReviewStore {
   }
 
   private fail(error: unknown): void {
+    this._stage.set(null);
+    this._trackingId.set(null);
     this._phase.set('error');
-    this._error.set(this.errors.userMessage(error, REVIEW_ERROR_MESSAGES));
+    if (error instanceof ReviewInterruptedError) {
+      this._interruptedReviewId.set(error.reviewId);
+      this._error.set(REVIEW_ERROR_MESSAGES[error.code] ?? null);
+    } else if (error instanceof ReviewFailedError) {
+      this._error.set(
+        REVIEW_ERROR_MESSAGES[error.code] ?? 'The review failed. Please run it again.',
+      );
+    } else {
+      this._error.set(this.errors.userMessage(error, REVIEW_ERROR_MESSAGES));
+    }
   }
 
   /** The finding's range in the reviewed text, if it still matches its excerpt. */

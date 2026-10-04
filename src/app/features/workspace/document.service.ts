@@ -1,4 +1,5 @@
 import { Injectable, computed, signal } from '@angular/core';
+import { codePointLength } from '../content-review/review.mappers';
 import { SAMPLE_DOCUMENT } from './sample-document';
 
 /**
@@ -15,7 +16,8 @@ export class DocumentService {
 
   readonly title = this._title.asReadonly();
   readonly content = this._content.asReadonly();
-  readonly length = computed(() => this._content().length);
+  /** Unicode code points, the unit Node uses for `REVIEW_MAX_CONTENT_CHARS`. */
+  readonly length = computed(() => codePointLength(this._content()));
   readonly origin = computed<DocumentOrigin>(() =>
     this._content() === SAMPLE_DOCUMENT.content && this._title() === SAMPLE_DOCUMENT.title
       ? 'sample'

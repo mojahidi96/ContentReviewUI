@@ -24,7 +24,7 @@ export interface DisplayMeta {
 const CATEGORY_META: Record<string, DisplayMeta> = {
   spelling: { label: 'Spelling', icon: faSpellCheck, tone: 'warning' },
   grammar: { label: 'Grammar', icon: faPenNib, tone: 'info' },
-  vulgar_language: { label: 'Inappropriate language', icon: faCommentSlash, tone: 'danger' },
+  profanity: { label: 'Inappropriate language', icon: faCommentSlash, tone: 'danger' },
 };
 
 /** Highlight styles per category. Each also uses a distinct underline so colour is not the only cue. */
@@ -33,7 +33,7 @@ const CATEGORY_HIGHLIGHT: Record<string, string> = {
     'bg-amber-100 decoration-amber-600 decoration-wavy dark:bg-amber-400/25 dark:decoration-amber-400',
   grammar:
     'bg-sky-100 decoration-sky-700 decoration-dashed dark:bg-sky-400/25 dark:decoration-sky-400',
-  vulgar_language:
+  profanity:
     'bg-red-100 decoration-red-700 decoration-double dark:bg-red-400/25 dark:decoration-red-400',
 };
 

@@ -6,6 +6,7 @@ import {
   faChevronDown,
   faRotateLeft,
   faWandMagicSparkles,
+  faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import { Badge } from '../../shared/components/badge';
 import { ButtonDirective } from '../../shared/components/button.directive';
@@ -13,7 +14,13 @@ import { SEVERITY_META, STATUS_META, categoryMeta } from './finding-meta';
 import type { Finding } from './review.models';
 import type { FindingActions } from './review.store';
 
-const NO_ACTIONS: FindingActions = { applied: false, canAccept: false, canUndo: false, note: null };
+const NO_ACTIONS: FindingActions = {
+  applied: false,
+  canAccept: false,
+  canUndo: false,
+  canDismiss: false,
+  note: null,
+};
 
 /**
  * One finding as an accordion item. The header only expands/collapses; clicking the body
@@ -135,6 +142,19 @@ const NO_ACTIONS: FindingActions = { applied: false, canAccept: false, canUndo: 
 
       @if (finding().status !== 'resolved') {
         <div class="mt-3 flex justify-end gap-2">
+          @if (finding().status === 'pending' && !actions().applied) {
+            <button
+              type="button"
+              appButton
+              variant="ghost"
+              size="sm"
+              class="mr-auto"
+              [disabled]="!actions().canDismiss"
+              (click)="dismissRequested.emit()"
+            >
+              <fa-icon [icon]="dismissIcon" /> Dismiss
+            </button>
+          }
           <button
             type="button"
             appButton
@@ -170,6 +190,7 @@ export class FindingCard {
   readonly selected = output();
   readonly acceptRequested = output();
   readonly undoRequested = output();
+  readonly dismissRequested = output();
   readonly expandedToggle = output();
 
   protected readonly category = computed(() => categoryMeta(this.finding().category));
@@ -186,6 +207,7 @@ export class FindingCard {
   protected readonly chevronIcon = faChevronDown;
   protected readonly acceptIcon = faCheck;
   protected readonly undoIcon = faRotateLeft;
+  protected readonly dismissIcon = faXmark;
 
   /**
    * Pointer shortcut: clicking the card body highlights the finding. The header (expand/collapse)

@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
@@ -9,19 +9,29 @@ import {
   faRotateRight,
 } from '@fortawesome/free-solid-svg-icons';
 import { Subject, catchError, map, of, startWith, switchMap } from 'rxjs';
+import { APP_CONFIG } from '../../core/config/app-config';
 import { ErrorHandlingService } from '../../core/http/error-handling.service';
+import type { BadgeTone } from '../../shared/components/badge';
 import { Badge } from '../../shared/components/badge';
 import { ButtonDirective } from '../../shared/components/button.directive';
 import { EmptyState } from '../../shared/components/empty-state';
 import { Spinner } from '../../shared/components/spinner';
 import { ContentReviewApiService } from './content-review-api.service';
-import type { ReviewSummary } from './review.models';
+import type { ReviewPage, ReviewStatus, ReviewSummary } from './review.models';
 import { ReviewStore } from './review.store';
 
 type HistoryState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'loaded'; items: readonly ReviewSummary[] };
+  | { status: 'loaded'; page: ReviewPage };
+
+const STATUS_BADGE: Record<ReviewStatus, { label: string; tone: BadgeTone }> = {
+  pending: { label: 'Queued', tone: 'neutral' },
+  processing: { label: 'In progress', tone: 'info' },
+  completed: { label: 'Completed', tone: 'success' },
+  failed: { label: 'Failed', tone: 'danger' },
+  cancelled: { label: 'Cancelled', tone: 'neutral' },
+};
 
 @Component({
   selector: 'app-review-history-page',
@@ -95,19 +105,15 @@ type HistoryState =
                         <time [attr.datetime]="item.createdAt">{{
                           item.createdAt | date: 'medium'
                         }}</time>
-                        · {{ item.contentLength.toLocaleString() }} characters
                       </p>
                       <div class="mt-2 flex flex-wrap gap-1.5">
-                        <app-badge>{{ item.findingCounts.total }} findings</app-badge>
-                        @if (item.findingCounts.pending) {
-                          <app-badge tone="warning"
-                            >{{ item.findingCounts.pending }} need review</app-badge
-                          >
-                        }
-                        @if (item.findingCounts.resolved) {
-                          <app-badge tone="success"
-                            >{{ item.findingCounts.resolved }} resolved</app-badge
-                          >
+                        <app-badge [tone]="statusBadge(item).tone">{{
+                          statusBadge(item).label
+                        }}</app-badge>
+                        @if (item.status === 'completed') {
+                          <app-badge>{{
+                            item.findingCount === 1 ? '1 finding' : item.findingCount + ' findings'
+                          }}</app-badge>
                         }
                         @if (item.id === store.review()?.id) {
                           <app-badge tone="brand">Currently open</app-badge>
@@ -126,6 +132,34 @@ type HistoryState =
                   </li>
                 }
               </ul>
+              @if (totalPages() > 1) {
+                <nav
+                  class="mt-4 flex items-center justify-between gap-3 text-sm text-slate-600 dark:text-slate-400"
+                  aria-label="Review history pages"
+                >
+                  <button
+                    type="button"
+                    appButton
+                    variant="secondary"
+                    size="sm"
+                    [disabled]="page() <= 1"
+                    (click)="goTo(page() - 1)"
+                  >
+                    Previous
+                  </button>
+                  <p aria-live="polite">Page {{ page() }} of {{ totalPages() }}</p>
+                  <button
+                    type="button"
+                    appButton
+                    variant="secondary"
+                    size="sm"
+                    [disabled]="page() >= totalPages()"
+                    (click)="goTo(page() + 1)"
+                  >
+                    Next
+                  </button>
+                </nav>
+              }
             }
           }
         }
@@ -135,11 +169,17 @@ type HistoryState =
 })
 export class ReviewHistoryPage {
   private readonly api = inject(ContentReviewApiService);
+  private readonly pageSize = inject(APP_CONFIG).review.pageSize;
   private readonly errors = inject(ErrorHandlingService);
   private readonly router = inject(Router);
   protected readonly store = inject(ReviewStore);
 
   protected readonly state = signal<HistoryState>({ status: 'loading' });
+  protected readonly page = signal(1);
+  protected readonly totalPages = computed(() => {
+    const state = this.state();
+    return state.status === 'loaded' ? state.page.totalPages : 0;
+  });
   private readonly reload$ = new Subject<void>();
 
   protected readonly historyIcon = faClockRotateLeft;
@@ -151,8 +191,8 @@ export class ReviewHistoryPage {
       .pipe(
         startWith(undefined),
         switchMap(() =>
-          this.api.listReviews().pipe(
-            map((items): HistoryState => ({ status: 'loaded', items })),
+          this.api.listReviews(this.page(), this.pageSize).pipe(
+            map((page): HistoryState => ({ status: 'loaded', page })),
             catchError((error: unknown) =>
               of<HistoryState>({ status: 'error', message: this.errors.userMessage(error) }),
             ),
@@ -166,7 +206,16 @@ export class ReviewHistoryPage {
 
   protected items(): readonly ReviewSummary[] {
     const state = this.state();
-    return state.status === 'loaded' ? state.items : [];
+    return state.status === 'loaded' ? state.page.items : [];
+  }
+
+  protected statusBadge(item: ReviewSummary): { label: string; tone: BadgeTone } {
+    return STATUS_BADGE[item.status];
+  }
+
+  protected goTo(page: number): void {
+    this.page.set(page);
+    this.reload$.next();
   }
 
   protected errorMessage(): string {

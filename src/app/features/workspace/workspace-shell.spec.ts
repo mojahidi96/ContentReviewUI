@@ -4,7 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
 import { ViewportService } from '../../core/layout/viewport.service';
-import { TEST_READER, TEST_USER, provideTestHttp } from '../../testing/test-providers';
+import { TEST_READER, TEST_USER, provideTestHttp, signIn } from '../../testing/test-providers';
 import { DocumentService } from './document.service';
 import { WorkspaceShell } from './workspace-shell';
 
@@ -32,8 +32,7 @@ describe('WorkspaceShell', () => {
       providers: [...provideTestHttp(), { provide: ViewportService, useValue: { isDesktop } }],
     });
     http = TestBed.inject(HttpTestingController);
-    TestBed.inject(AuthService).login({ email: 'a@b.co', password: 'x' }).subscribe();
-    http.expectOne('/api/v1/auth/login').flush({ user: TEST_USER });
+    signIn(TEST_USER);
 
     fixture = TestBed.createComponent(WorkspaceShell);
     el = fixture.nativeElement;
@@ -54,8 +53,7 @@ describe('WorkspaceShell', () => {
   });
 
   it('hides review tools and authoring pages from read-only users', async () => {
-    TestBed.inject(AuthService).login({ email: 'r@b.co', password: 'x' }).subscribe();
-    http.expectOne('/api/v1/auth/login').flush({ user: TEST_READER });
+    signIn(TEST_READER);
     await fixture.whenStable();
     expect(el.textContent).toContain('Read only');
     expect(button('Content Review')).toBeUndefined();

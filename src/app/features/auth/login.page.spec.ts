@@ -1,7 +1,13 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { TEST_USER, provideTestHttp } from '../../testing/test-providers';
+import {
+  TEST_CONFIG,
+  TEST_USER,
+  flushCsrf,
+  provideTestHttp,
+  toUserDto,
+} from '../../testing/test-providers';
 import { LoginPage } from './login.page';
 
 describe('LoginPage', () => {
@@ -60,9 +66,10 @@ describe('LoginPage', () => {
     expect(submitButton().textContent).toContain('Signing in');
     await submit(); // second click while pending
 
+    flushCsrf(http);
     const req = http.expectOne('/api/v1/auth/login'); // only one request
     expect(req.request.body).toEqual({ email: 'ada@example.com', password: 'secret' });
-    req.flush({ user: TEST_USER });
+    req.flush({ user: toUserDto(TEST_USER), csrfToken: 't' });
     await fixture.whenStable();
 
     expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/history');
@@ -74,7 +81,8 @@ describe('LoginPage', () => {
     type('login-email', 'ada@example.com');
     type('login-password', 'secret');
     await submit();
-    http.expectOne('/api/v1/auth/login').flush({ user: TEST_USER });
+    flushCsrf(http);
+    http.expectOne('/api/v1/auth/login').flush({ user: toUserDto(TEST_USER), csrfToken: 't' });
     await fixture.whenStable();
     expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace');
   });
@@ -90,6 +98,7 @@ describe('LoginPage', () => {
     type('login-email', 'ada@example.com');
     type('login-password', 'secret');
     await submit();
+    flushCsrf(http);
     http.expectOne('/api/v1/auth/login').flush(body, { status, statusText: 'Error' });
     await fixture.whenStable();
     expect(el.querySelector('[role=alert]')?.textContent).toContain(message);
@@ -101,6 +110,7 @@ describe('LoginPage', () => {
     type('login-email', 'ada@example.com');
     type('login-password', 'secret');
     await submit();
+    flushCsrf(http);
     http.expectOne('/api/v1/auth/login').error(new ProgressEvent('error'));
     await fixture.whenStable();
     expect(el.querySelector('[role=alert]')?.textContent).toContain('could not reach the server');
@@ -126,9 +136,10 @@ describe('LoginPage', () => {
       expect(guestButton().textContent).toContain('Starting guest session');
       guestButton().click(); // ignored while pending
 
+      flushCsrf(http);
       const req = http.expectOne('/api/v1/auth/guest');
       expect(req.request.method).toBe('POST');
-      req.flush({ user: guest });
+      req.flush({ user: toUserDto(guest), csrfToken: 't' });
       await fixture.whenStable();
 
       expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/history');
@@ -139,10 +150,24 @@ describe('LoginPage', () => {
     it('reports a failed guest sign-in', async () => {
       guestButton().click();
       await fixture.whenStable();
+      flushCsrf(http);
       http.expectOne('/api/v1/auth/guest').flush(null, { status: 500, statusText: 'Error' });
       await fixture.whenStable();
       expect(el.querySelector('[role=alert]')?.textContent).toContain('Something went wrong');
       expect(router.navigateByUrl).not.toHaveBeenCalled();
+    });
+
+    it('is hidden when the backend has no guest endpoint (Node)', async () => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        imports: [LoginPage],
+        providers: provideTestHttp([], { ...TEST_CONFIG, features: { guestLogin: false } }),
+      });
+      http = TestBed.inject(HttpTestingController);
+      const node = TestBed.createComponent(LoginPage);
+      await node.whenStable();
+      expect(node.nativeElement.querySelector('[data-testid=guest-login]')).toBeNull();
+      expect(node.nativeElement.textContent).not.toContain('Continue as guest');
     });
   });
 

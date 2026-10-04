@@ -23,6 +23,9 @@ import {
 import { focusFirstInvalid } from './focus-first-invalid';
 import { PasswordInput } from './password-input';
 
+/** Node's body field names that differ from this form's control names. */
+const SERVER_FIELD_NAMES: Readonly<Record<string, string>> = { displayName: 'fullName' };
+
 const REGISTER_ERRORS = {
   validation: 'Some details are invalid. Please review the highlighted fields.',
 };
@@ -297,14 +300,14 @@ export class RegisterPage {
   }
 
   private handleError(error: ApiError): void {
-    if (error.code === 'EMAIL_TAKEN') {
+    if (error.code === 'EMAIL_ALREADY_REGISTERED') {
       this.emailTaken.set(true);
       focusFirstInvalid(this.host, this.injector);
       return;
     }
     if (error.fieldErrors) {
       for (const [field, message] of Object.entries(error.fieldErrors)) {
-        const control = this.form.get(field);
+        const control = this.form.get(SERVER_FIELD_NAMES[field] ?? field);
         control?.setErrors({ ...control.errors, server: message });
         control?.markAsTouched();
       }
