@@ -17,7 +17,7 @@ import { DocumentPage } from './document.page';
 import { DocumentService } from './document.service';
 
 describe('DocumentPage', () => {
-  const render = async (user: User, reviewParam?: string) => {
+  const render = async (user: User, reviewParam?: string, documentParam?: string) => {
     TestBed.configureTestingModule({
       providers: [...provideTestHttp(), DocumentService, ReviewStore],
     });
@@ -25,6 +25,7 @@ describe('DocumentPage', () => {
     TestBed.inject(DocumentService).setContent('Quarterly report text.');
     const fixture = TestBed.createComponent(DocumentPage);
     if (reviewParam) fixture.componentRef.setInput('review', reviewParam);
+    if (documentParam) fixture.componentRef.setInput('document', documentParam);
     await fixture.whenStable();
     return fixture.nativeElement as HTMLElement;
   };
@@ -67,5 +68,60 @@ describe('DocumentPage', () => {
       [],
       expect.objectContaining({ queryParams: { review: REVIEW_ID }, replaceUrl: true }),
     );
+  });
+
+  describe('saved documents', () => {
+    const DOC_ID = 'cccccccccccccccccccccccc';
+    const saved = (content: string) => ({
+      document: {
+        documentId: DOC_ID,
+        title: 'My saved doc',
+        content,
+        contentLength: content.length,
+        version: 4,
+        createdAt: '',
+        updatedAt: '',
+      },
+    });
+
+    it('opens the most recently saved document when no link says otherwise', async () => {
+      await render(TEST_USER);
+      const http = TestBed.inject(HttpTestingController);
+      const summary: Record<string, unknown> = { ...saved('x').document };
+      delete summary['content'];
+      http
+        .expectOne((r) => r.url === '/api/v1/documents')
+        .flush({ items: [summary], page: 1, limit: 1, total: 1, totalPages: 1 });
+      http.expectOne(`/api/v1/documents/${DOC_ID}`).flush(saved('  kept\n\tas is'));
+      expect(TestBed.inject(DocumentService).content()).toBe('  kept\n\tas is');
+    });
+
+    it('restores ?document= after a reload, and mirrors the id into the URL', async () => {
+      await render(TEST_USER, undefined, DOC_ID);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      const http = TestBed.inject(HttpTestingController);
+      http.expectNone((r) => r.url === '/api/v1/documents'); // no "latest" lookup
+      http.expectOne(`/api/v1/documents/${DOC_ID}`).flush(saved('restored'));
+      TestBed.tick();
+      expect(TestBed.inject(DocumentService).title()).toBe('My saved doc');
+      expect(navigate).not.toHaveBeenCalled(); // URL already matches
+    });
+
+    it('keeps the saved text when a review link is opened alongside it', async () => {
+      await render(TEST_USER, REVIEW_ID, DOC_ID);
+      const http = TestBed.inject(HttpTestingController);
+      http.expectOne(`/api/v1/documents/${DOC_ID}`).flush(saved('saved text'));
+      http
+        .expectOne(`/api/v1/reviews/${REVIEW_ID}`)
+        .flush(reviewBody('reviewed text', [], { documentTitle: 'Reviewed' }));
+      expect(TestBed.inject(DocumentService).content()).toBe('saved text');
+    });
+
+    it('does not load the latest document for a review-only link', async () => {
+      await render(TEST_USER, REVIEW_ID);
+      const http = TestBed.inject(HttpTestingController);
+      http.expectNone((r) => r.url === '/api/v1/documents');
+      http.expectOne(`/api/v1/reviews/${REVIEW_ID}`).flush(reviewBody('The teh end', []));
+    });
   });
 });

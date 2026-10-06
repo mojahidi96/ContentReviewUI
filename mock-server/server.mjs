@@ -64,6 +64,8 @@ const reviews = new Map();
 const reviewEvents = new Map();
 /** Live SSE listeners per review. */
 const listeners = new Map();
+/** Saved author documents, keyed by documentId. Content is stored exactly as sent. */
+const documents = new Map();
 
 const hex24 = () => randomBytes(12).toString('hex');
 const nowIso = () => new Date().toISOString();
@@ -201,6 +203,9 @@ function endSession(sid) {
   if (session && guestUsers.delete(session.userId)) {
     for (const [id, review] of reviews) {
       if (review.ownerId === session.userId) deleteReview(id);
+    }
+    for (const [id, doc] of documents) {
+      if (doc.ownerId === session.userId) documents.delete(id);
     }
   }
 }
@@ -556,6 +561,129 @@ api.delete('/reviews/:reviewId', csrfProtect, (req, res) => {
   const review = ownedReview(req, res);
   if (!review) return;
   deleteReview(review.reviewId);
+  res.status(204).end();
+});
+
+// ---------------------------------------------------------------- documents
+const documentSummary = (d) => ({
+  documentId: d.documentId,
+  title: d.title,
+  contentLength: d.contentLength,
+  version: d.version,
+  createdAt: d.createdAt,
+  updatedAt: d.updatedAt,
+});
+const documentBody = (d) => ({ document: { ...documentSummary(d), content: d.content } });
+
+/** Validates like Node: title trimmed 1–200; content any string (even empty), never altered. */
+function documentDetails(body, allowed) {
+  const { title, content } = body ?? {};
+  const details = unknownKeys(body, allowed);
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 200)
+    details.push({ path: 'body.title', message: 'Title is required' });
+  if (typeof content !== 'string')
+    details.push({ path: 'body.content', message: 'Invalid input: expected string' });
+  else if (!content.isWellFormed())
+    details.push({
+      path: 'body.content',
+      message: 'Content contains invalid Unicode (lone surrogates)',
+    });
+  else if (Array.from(content).length > MAX_CONTENT_CODE_POINTS)
+    details.push({
+      path: 'body.content',
+      message: `Content must be at most ${MAX_CONTENT_CODE_POINTS} characters`,
+    });
+  return details;
+}
+
+function ownedDocument(req, res) {
+  if (!isReviewId(req.params.documentId)) {
+    validation(req, res, [{ path: 'params.documentId', message: 'Invalid document id' }]);
+    return null;
+  }
+  const doc = documents.get(req.params.documentId);
+  if (!doc || doc.ownerId !== req.auth.user.id) {
+    fail(req, res, 404, 'DOCUMENT_NOT_FOUND', 'The document was not found.');
+    return null;
+  }
+  return doc;
+}
+
+api.use('/documents', requireAuth);
+
+api.post('/documents', csrfProtect, (req, res) => {
+  const details = documentDetails(req.body, ['title', 'content']);
+  if (details.length) return validation(req, res, details);
+  const now = nowIso();
+  const doc = {
+    documentId: hex24(),
+    ownerId: req.auth.user.id,
+    title: req.body.title.trim(),
+    content: req.body.content,
+    contentLength: Array.from(req.body.content).length,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  documents.set(doc.documentId, doc);
+  res
+    .status(201)
+    .location(`/api/v1/documents/${doc.documentId}`)
+    .set('Cache-Control', 'no-store')
+    .json(documentBody(doc));
+});
+
+api.get('/documents', (req, res) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 20);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 50)
+    return validation(req, res, [{ path: 'query', message: 'Invalid page or limit' }]);
+  const all = [...documents.values()]
+    .filter((d) => d.ownerId === req.auth.user.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  res.set('Cache-Control', 'no-store').json({
+    items: all.slice((page - 1) * limit, page * limit).map(documentSummary),
+    page,
+    limit,
+    total: all.length,
+    totalPages: Math.ceil(all.length / limit),
+  });
+});
+
+api.get('/documents/:documentId', (req, res) => {
+  const doc = ownedDocument(req, res);
+  if (doc) res.set('Cache-Control', 'no-store').json(documentBody(doc));
+});
+
+api.put('/documents/:documentId', csrfProtect, (req, res) => {
+  const doc = ownedDocument(req, res);
+  if (!doc) return;
+  const details = documentDetails(req.body, ['title', 'content', 'version']);
+  if (!Number.isInteger(req.body?.version) || req.body.version < 1)
+    details.push({ path: 'body.version', message: 'Invalid input: expected int' });
+  if (details.length) return validation(req, res, details);
+  if (req.body.version !== doc.version)
+    return fail(
+      req,
+      res,
+      409,
+      'DOCUMENT_VERSION_CONFLICT',
+      'The document was changed since you loaded it. Reload it before saving again.',
+    );
+  Object.assign(doc, {
+    title: req.body.title.trim(),
+    content: req.body.content,
+    contentLength: Array.from(req.body.content).length,
+    version: doc.version + 1,
+    updatedAt: nowIso(),
+  });
+  res.set('Cache-Control', 'no-store').json(documentBody(doc));
+});
+
+api.delete('/documents/:documentId', csrfProtect, (req, res) => {
+  const doc = ownedDocument(req, res);
+  if (!doc) return;
+  documents.delete(doc.documentId);
   res.status(204).end();
 });
 

@@ -82,7 +82,7 @@ These keep existing behaviour working without assuming an API that doesn't exist
 | --- | --- | --- |
 | No roles in Node | The read-only experience is unreachable with Node; it still works with the mock's reader account. | [Q1](#q1) |
 | No guest endpoint | "Continue as guest" is hidden in development and production builds; only `npm run dev` (mock) shows it. | [Q2](#q2) |
-| Edited text is not persisted | After Save Changes and a reload, the review's **original** snapshot comes back with those findings marked `accepted` (the user can re-apply them). Before, the mock behaved the same, but it was undocumented. | [Q3](#q3) |
+| ~~Edited text is not persisted~~ | **Resolved on Node branch `feature/documents`:** the editor's **Save** stores the text in MongoDB byte-for-byte, and it reopens after a reload or sign-in. Still open: a review's own snapshot and finding statuses are separate from the saved document, and `resolved` is never set. | [Q3](#q3) |
 | Dismiss is final | No way back to `pending`; a dismissed finding can still be accepted. | [Q4](#q4) |
 | 15-minute fixed session | Users are signed out mid-edit; unsaved local changes are lost (the review itself is restored via `?review=`). | [Q5](#q5) |
 | History detail | No per-status counts or length per review in the list. | [Q8](#q8) |
@@ -99,10 +99,11 @@ shape is `POST /auth/guest` → `201 { user: { …, guest: true }, csrfToken }` 
 heavily rate-limited, with the account and its reviews deleted when the session ends). Otherwise
 the UI feature stays mock-only or is removed.
 
-<a id="q3"></a>**Q3. Persisting accepted edits.** Nothing in Node ever sets a finding to
-`resolved`, and there is no way to store the edited text. Which do you prefer: (a) allow users to
-set `resolved` after `accepted`, (b) a content update that re-bases or invalidates findings, or (c)
-a separate document resource? Until then Save Changes only records `accepted`.
+<a id="q3"></a>**Q3. Persisting accepted edits.** *Partly answered:* option (c) is implemented as
+`/api/v1/documents` on Node branch `feature/documents` (see
+[api-contract.md §10.3](api-contract.md#103-saved-documents--node-branch-featuredocuments)), so authors' text is now
+saved. Please review and merge that branch. Remaining: should reviews link to a document
+(`documentId` on `POST /reviews`), and should findings ever become `resolved`?
 
 <a id="q4"></a>**Q4. Undoing a dismissal.** `dismissed → pending` is not allowed. Is that
 intended? The UI shows Dismiss as final.
@@ -180,3 +181,26 @@ npm start              # in ContentReviewUI: development configuration, proxies 
 ```
 
 Use `npm run dev` in this repository instead to run against the in-memory mock.
+
+## 7. Saved documents (added 2026-10-07)
+
+Authors can now save their text. The work spans both repositories:
+
+- **ContentReviewService, branch `feature/documents`** (not committed): a `documents` module
+  (model, strict Zod schemas, service, routes), `DOCUMENT_MAX_CONTENT_CHARS`, the
+  `DOCUMENT_NOT_FOUND` and `DOCUMENT_VERSION_CONFLICT` error codes, `PUT` added to the CORS
+  methods, its `docs/api-contract.md` updated, and 18 integration tests. They include a
+  byte-for-byte round-trip of indentation, tabs, CRLF, blank lines, trailing spaces, NBSP, emoji
+  and combining marks, plus ownership, CSRF, validation and version conflicts. `npm run check`:
+  213 tests pass.
+- **ContentReviewUI:** a Save button and Ctrl/⌘+S, saved/unsaved state, conflict handling,
+  `?document=` restore, reopening the latest document, and a warning on unload. The mock API gets
+  the same endpoints. 238 UI tests pass.
+- **Verified end to end** against the running Node service (MongoDB Atlas): save, reload,
+  Ctrl+S, a two-tab conflict with "Load latest version", and sign out and back in. The stored
+  value was read back from MongoDB and was byte-identical to what was typed.
+
+Known limits: the textarea's Tab key moves focus (an accessibility requirement), so authors can't
+type a tab character, but pasted tabs are kept. Signing out with unsaved changes doesn't ask for
+confirmation (the browser prompt covers reloads and closing the tab). The findings panel's
+"Save Changes" (finding statuses) and the editor's "Save" (document text) are separate actions.

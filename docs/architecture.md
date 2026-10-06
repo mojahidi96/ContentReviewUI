@@ -44,7 +44,7 @@ There is no state library. Signals hold the state and RxJS handles async work.
 | --- | --- | --- |
 | Current user and auth status | `AuthService` | Root singleton |
 | Toasts | `NotificationService` | Root singleton |
-| Document title and content | `DocumentService` | Provided by `WorkspaceShell` |
+| Document title and content, saved id/version, save state | `DocumentService` | Provided by `WorkspaceShell` |
 | Review, findings, filters, view mode | `ReviewStore` | Provided by `WorkspaceShell` |
 | Sidebar collapsed / drawer open | `WorkspaceShell` | Component |
 
@@ -80,6 +80,24 @@ stream closed early ─► wait ─► GET snapshot ─► terminal? show it : r
 - `buildSegments()` validates ranges, widens any range that would split a surrogate pair, and splits overlapping or nested ranges into non-overlapping segments. Joining every segment's text gives back the original exactly, and the unit tests check this.
 - **Save Changes**: after confirmation it PATCHes every accepted finding to `accepted` in parallel (Node reserves `resolved` for itself). On success the baseline becomes the new reviewed text, the findings are shown as "Resolved" locally, and the list is cleared, so saved changes can no longer be undone. On failure nothing is committed locally and the user can retry. Node does not store the edited text (see integration-status Q3).
 - **Dismiss** PATCHes `dismissed` immediately. It is only offered for pending findings that are not locally accepted, and it is final because Node has no transition back to `pending`.
+
+### Saving documents
+
+`DocumentService` owns the open document and its persistence through `DocumentApiService`
+(`/api/v1/documents`):
+
+- It keeps a snapshot (`id`, `version`, `title`, `content`) of what Node has stored. `origin` is
+  derived from it: `sample`, `draft` (never saved), `saved` (matches the snapshot) or `modified`.
+- `save()` sends the editor string **unchanged**. It `POST`s the first time and `PUT`s with the
+  snapshot `version` after that. The snapshot is replaced by the server's reply, so text typed
+  while a save is in flight stays "modified".
+- `409 DOCUMENT_VERSION_CONFLICT` sets `hasConflict`, which blocks Save; `reloadSaved()` loads the
+  stored copy. `404 DOCUMENT_NOT_FOUND` drops the snapshot, so the next Save creates a new document.
+- `restore()` runs once per workspace session. `DocumentPage` calls it with `?document=`, or asks
+  for the latest document when no `?review=` link supplies the text. While it loads, the editor is
+  read-only.
+- `DocumentPage` mirrors `documentId` into `?document=`, but leaves the parameter alone while a load
+  is in flight.
 
 ## Security model
 

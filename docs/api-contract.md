@@ -18,6 +18,7 @@ Every endpoint and field is tagged:
 | ✅ **Verified** | Read in the Node **source code** (not only its docs) at ContentReviewService commit `dce36b5` (2026-10-04, clean working tree), and implemented by the UI. |
 | 🟡 **Proposed** | Needed or wanted by the UI but **not implemented in Node**. Requires agreement before the UI can rely on it. The mock API may implement it, clearly marked. |
 | ⛔ **Not available** | Exists only further down the stack (Python) or not at all. The UI does not use it. |
+| ✅ **branch** | Implemented in ContentReviewService on branch `feature/documents` (with tests), not merged into Node's `main` yet. |
 
 Open questions are numbered `Q1…` and collected in
 [integration-status.md](integration-status.md#questions-for-the-nodejs-team). Where the Node
@@ -45,8 +46,12 @@ The UI keeps its own domain types and converts in one place
 | GET | `/reviews/{reviewId}/events` | ✓ | – | ✅ | Live progress (SSE) |
 | PATCH | `/reviews/{reviewId}/findings/{findingId}` | ✓ | ✓ | ✅ | Dismiss; Save Changes (`accepted`) |
 | DELETE | `/reviews/{reviewId}` | ✓ | ✓ | ✅ | Not used yet (no delete UI) |
-| PATCH | `/reviews/{reviewId}` (content) | ✓ | ✓ | 🟡 | Would persist saved edits ([Q3](integration-status.md#q3)) |
-| POST/GET/DELETE | `/documents…` | ✓ | ✓ | ⛔ | No upload UI; Node has no endpoint |
+| POST | `/documents` | ✓ | ✓ | ✅ branch | Save (first time) ([§10.3](#103-saved-documents--node-branch-featuredocuments)) |
+| GET | `/documents?page&limit` | ✓ | – | ✅ branch | Reopen the latest document |
+| GET | `/documents/{documentId}` | ✓ | – | ✅ branch | `?document=` restore, "Load latest version" |
+| PUT | `/documents/{documentId}` | ✓ | ✓ | ✅ branch | Save (later saves, with `version`) |
+| DELETE | `/documents/{documentId}` | ✓ | ✓ | ✅ branch | Not used yet |
+| POST/GET/DELETE | `/uploads…` | ✓ | ✓ | ⛔ | File upload for chat: no UI, no Node endpoint |
 | POST | `/chat` | ✓ | ✓ | ⛔ | No chat UI; Node has no endpoint |
 
 Node's health endpoints are mounted at `/health` (outside `/api`) and the browser does not use them.
@@ -182,6 +187,8 @@ status) and never renders backend text as HTML.
 | 404 | `NOT_FOUND` | Unknown route | Generic not-found copy |
 | 404 | `REVIEW_NOT_FOUND` | Review missing **or owned by someone else** | "That review no longer exists." |
 | 404 | `FINDING_NOT_FOUND` | Finding not in this review | Toast on Dismiss/Save |
+| 404 | `DOCUMENT_NOT_FOUND` | Saved document missing or not yours (branch) | Toast; next Save creates a new document |
+| 409 | `DOCUMENT_VERSION_CONFLICT` | Document saved elsewhere since it was loaded (branch) | Alert with **Load latest version**; Save blocked |
 | 409 | `EMAIL_ALREADY_REGISTERED` | Duplicate registration | Inline on the email field, with a sign-in link |
 | 409 | `REVIEW_NOT_COMPLETED` | Finding update before completion | Toast (the UI only offers actions on completed reviews) |
 | 409 | `INVALID_STATE_TRANSITION` | Finding transition not allowed | Toast |
@@ -650,24 +657,74 @@ roles: every account may create reviews and update findings. The UI therefore tr
 
 `POST /auth/guest` as described in §4. Only the mock implements it.
 
-### 10.3 Persisting edited content 🟡 ([Q3](integration-status.md#q3))
+### 10.3 Saved documents ✅ (Node branch `feature/documents`)
 
-Node stores the submitted `content` as a snapshot and nothing else. A proposal that keeps Node's
-offset guarantees:
+Added to ContentReviewService on branch `feature/documents` (not merged into Node's `main` yet).
+It persists the author's text, so it answers the content part of
+[Q3](integration-status.md#q3). Findings still use `accepted`, and nothing sets `resolved`.
 
+**Content is stored exactly as sent.** Neither the UI nor Node trims, normalizes or converts
+`content`: indentation, tabs, blank lines, trailing spaces, line endings and Unicode (emoji,
+combining marks, non-breaking spaces) round-trip byte-for-byte. Only `title` is trimmed. The UI
+sends the editor's string as is. Browsers report textarea line breaks as `\n`.
+
+| Method | Path | Body | Success | Errors |
+| --- | --- | --- | --- | --- |
+| POST | `/documents` _(CSRF)_ | `{ title, content }` | `201 { document }`, `Location` | `400`, `403` |
+| GET | `/documents?page&limit` | – | `200 { items: DocumentSummary[], page, limit, total, totalPages }`, newest `updatedAt` first, no `content` | `400` |
+| GET | `/documents/{documentId}` | – | `200 { document }` | `400`, `404 DOCUMENT_NOT_FOUND` |
+| PUT | `/documents/{documentId}` _(CSRF)_ | `{ title, content, version }` | `200 { document }` with `version + 1` | `409 DOCUMENT_VERSION_CONFLICT` (nothing written), `404`, `400` |
+| DELETE | `/documents/{documentId}` _(CSRF)_ | – | `204` | `404` (not used by the UI yet) |
+
+| Field | Rule |
+| --- | --- |
+| `title` | 1–200 chars after trimming. The UI sends `Untitled document` for a blank title. |
+| `content` | Any string, **including empty**; ≤ `DOCUMENT_MAX_CONTENT_CHARS` code points (default 50 000, same as reviews); well-formed Unicode. |
+| `version` | `PUT` only: the version the client last loaded. A different current version means another tab or device saved first. |
+
+```json
+{
+  "document": {
+    "documentId": "6ac54f0641492ce89bd6f5ea",
+    "title": "Formatting test",
+    "content": "  Two-space indent\n\tTab indent\n\n\nTrailing spaces   \n",
+    "contentLength": 54,
+    "version": 4,
+    "createdAt": "2026-10-07T19:40:00.000Z",
+    "updatedAt": "2026-10-07T19:41:12.000Z"
+  }
+}
 ```
-PATCH /api/v1/reviews/{reviewId}/findings/{findingId}
-{ "status": "resolved" }            // allow users to mark an accepted finding as applied
+
+```ts
+interface DocumentSummaryDto {
+  documentId: string; title: string; contentLength: number; // code points
+  version: number; createdAt: string; updatedAt: string;
+}
+interface DocumentDto extends DocumentSummaryDto { content: string }
 ```
 
-or a document resource that owns the current text (`PUT /documents/{id}` with
-`{ title, content, basedOnReviewId }`). Until one of these exists, saved edits live only in the
-browser session; a reload restores the review's original snapshot.
+How the UI uses it (`DocumentService`, `DocumentApiService`):
+
+- **Save** (button or Ctrl/⌘+S) `POST`s the first time, then `PUT`s with the last known
+  `version`. It is disabled while saving, when nothing changed, when the text is over the limit,
+  or after a conflict. Edits typed while a save is in flight stay "Unsaved changes".
+- The badge shows **Sample document · not saved**, **New document · not saved**, **Saved** or
+  **Unsaved changes**. The browser asks before a reload or tab close while changes are unsaved.
+- `409 DOCUMENT_VERSION_CONFLICT`: the author's text is kept. Saving is blocked, and
+  **Load latest version** (after a confirmation) replaces it with the stored copy.
+- `404 DOCUMENT_NOT_FOUND` on save (deleted elsewhere): the next Save creates a new document.
+- The open document is mirrored to `?document=<id>`, so a reload reopens it. Without `?document=`
+  or `?review=`, the workspace opens the author's most recently updated document
+  (`GET /documents?limit=1`, then `GET /documents/{id}`). The editor is read-only while it loads.
+- **New document** (when a saved document is open) starts an unsaved copy of the sample; the saved
+  one is untouched.
 
 ### 10.4 Document upload and RAG chat ⛔ ([Q13](integration-status.md#q13))
 
-**Current state:** the UI has **no upload or chat feature**, and Node has **no `/documents` or
-`/chat` routes**. The Python service has internal endpoints
+**Current state:** the UI has **no upload or chat feature**, and Node has **no upload or `/chat`
+routes**. (`/documents` is now taken by saved author documents, §10.3, so uploaded files are
+proposed under `/uploads`.) The Python service has internal endpoints
 (`/internal/v1/documents`, `/internal/v1/chat`) that require a service token and an
 `X-Tenant-ID`, so they must never be exposed to the browser. Nothing here is implemented in the UI.
 
@@ -676,9 +733,9 @@ Python contract, **to be agreed with Node**:
 
 | Method | Path | Request | Response |
 | --- | --- | --- | --- |
-| POST | `/api/v1/documents` | `multipart/form-data`: `file` (required; `.pdf`, `.docx`, `.xlsx`; max size TBD = Python `MAX_UPLOAD_SIZE_MB`), `metadata` (optional JSON, ≤ 20 string pairs) | `201` (`status: "ready"`) or `202` (`status: "uploaded"`) with the document resource |
-| GET | `/api/v1/documents/{documentId}` | – | Document resource; poll until `ready` or `failed` (or Node adds SSE) |
-| DELETE | `/api/v1/documents/{documentId}` | – | `204`; `409` while `uploaded`/`processing` |
+| POST | `/api/v1/uploads` | `multipart/form-data`: `file` (required; `.pdf`, `.docx`, `.xlsx`; max size TBD = Python `MAX_UPLOAD_SIZE_MB`), `metadata` (optional JSON, ≤ 20 string pairs) | `201` (`status: "ready"`) or `202` (`status: "uploaded"`) with the document resource |
+| GET | `/api/v1/uploads/{documentId}` | – | Document resource; poll until `ready` or `failed` (or Node adds SSE) |
+| DELETE | `/api/v1/uploads/{documentId}` | – | `204`; `409` while `uploaded`/`processing` |
 | POST | `/api/v1/chat` | `{ conversationId, documentIds[1..10], question (≤ 2000), history? }` | `{ conversationId, answer, insufficientEvidence, sources[] }` with `[S1]` markers |
 
 ```ts
