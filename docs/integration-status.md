@@ -52,12 +52,12 @@ API boundary.
 | Errors | `details[]` mapped to field errors, plus `requestId`, `Retry-After`, the `invalid_response` kind and fixed copy for `CSRF_INVALID`/`ORIGIN_NOT_ALLOWED`/`PAYLOAD_TOO_LARGE`. | `core/http/api-error.ts`, `core/http/error-handling.service.ts`, `shared/models/api.models.ts` |
 | Review API | Node request/response DTOs; shape-checked mappers; code point → UTF-16 conversion that drops any range not matching `originalText`; pagination. | `content-review/review.models.ts`, `review.mappers.ts`, `content-review-api.service.ts` |
 | SSE | `ReviewEventsService` (native `EventSource`, `withCredentials`, de-duplication by id, closes on terminal events and on unsubscribe) behind an injectable factory. | `content-review/review-events.service.ts` |
-| Review flow | Submit → 202 → follow events → GET snapshot; resume after closed streams; "interrupted" state with **Resume review** (no duplicate submission); progress stage and live finding count; failure copy by `errorCode`; `switchMap` closes stale streams. | `content-review/review.store.ts`, `findings-panel.ts` |
-| Findings | **Dismiss** action (immediate `PATCH dismissed`). **Save Changes** sends `accepted` instead of `resolved`. | `review.store.ts`, `finding-card.ts` |
-| Reload | Open review mirrored to `/workspace?review=<id>`; a reload restores the snapshot and its text. | `workspace/document.page.ts` |
-| History | Paginated (Previous/Next), status badge and finding total. | `content-review/review-history.page.ts` |
+| Review flow | Submit → 202 → follow events → GET snapshot; resume after closed streams; "interrupted" state with **Resume review** (no duplicate submission); progress stage and live finding count; failure copy by `errorCode`; `switchMap` closes stale streams. | `content-review/review.store.ts`, `findings-panel/findings-panel.ts` |
+| Findings | **Dismiss** action (immediate `PATCH dismissed`). **Save Changes** sends `accepted` instead of `resolved`. | `review.store.ts`, `finding-card/finding-card.ts` |
+| Reload | Open review mirrored to `/workspace?review=<id>`; a reload restores the snapshot and its text. | `workspace/document-page/document.page.ts` |
+| History | Paginated (Previous/Next), status badge and finding total. | `content-review/review-history-page/review-history.page.ts` |
 | Limits | Code-point counting in the editor and validation; `maxChars` 50 000. | `workspace/document.service.ts`, `review.store.ts` |
-| Register | `EMAIL_ALREADY_REGISTERED`; `displayName` errors land on "Full name"; 72-byte password cap. | `auth/register.page.ts`, `auth/auth.validators.ts` |
+| Register | `EMAIL_ALREADY_REGISTERED`; `displayName` errors land on "Full name"; 72-byte password cap. | `auth/register-page/register.page.ts`, `auth/auth.validators.ts` |
 | Config | `review.categories`, `review.pageSize`, `reviewEvents`, `features.guestLogin`; removed `reviewTimeoutMs` (creation is no longer long-running). New `mock` build configuration. | `core/config/app-config.ts`, `src/environments/*`, `angular.json`, `package.json` |
 | Mock API | Rewritten to the verified Node contract (CSRF, cookies, envelope, 202 + SSE with replay, `Last-Event-ID`, `204`, code-point offsets, transitions, pagination). Guest and reader are kept as **marked mock-only extensions**. | `mock-server/` |
 

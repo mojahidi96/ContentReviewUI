@@ -1,0 +1,120 @@
+<app-auth-layout
+  heading="Create your account"
+  subheading="Start reviewing content in under a minute."
+>
+  @if (serverError(); as message) {
+    <div
+      class="mb-6 flex gap-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200"
+      role="alert"
+    >
+      <fa-icon [icon]="errorIcon" class="mt-0.5" />
+      <p>{{ message }}</p>
+    </div>
+  }
+
+  <form
+    [formGroup]="form"
+    (ngSubmit)="submit()"
+    novalidate
+    class="space-y-5"
+    [attr.aria-busy]="pending()"
+  >
+    <app-form-field label="Full name" controlId="register-name" [error]="fullNameError()">
+      <input
+        id="register-name"
+        type="text"
+        formControlName="fullName"
+        autocomplete="name"
+        [class]="inputClasses"
+        [attr.aria-invalid]="!!fullNameError()"
+        [attr.aria-describedby]="describe('register-name', false, !!fullNameError())"
+      />
+    </app-form-field>
+
+    <app-form-field label="Work email" controlId="register-email" [error]="emailError()">
+      <input
+        id="register-email"
+        type="email"
+        formControlName="email"
+        autocomplete="email"
+        inputmode="email"
+        [class]="inputClasses"
+        [attr.aria-invalid]="!!emailError()"
+        [attr.aria-describedby]="describe('register-email', false, !!emailError())"
+      />
+    </app-form-field>
+    @if (emailTaken()) {
+      <p class="-mt-3 text-sm text-slate-700 dark:text-slate-300">
+        Already registered?
+        <a
+          routerLink="/login"
+          class="font-medium text-brand-700 hover:underline dark:text-brand-300"
+          >Sign in instead</a
+        >.
+      </p>
+    }
+
+    <app-form-field label="Password" controlId="register-password" [error]="passwordError()">
+      <app-password-input
+        inputId="register-password"
+        [control]="form.controls.password"
+        autocomplete="new-password"
+        [invalid]="!!passwordError()"
+        [describedBy]="
+          'register-password-rules ' + (passwordError() ? 'register-password-error' : '')
+        "
+      />
+      <ul
+        id="register-password-rules"
+        class="mt-2 grid gap-1 text-xs sm:grid-cols-2"
+        aria-label="Password requirements"
+      >
+        @for (rule of rules(); track rule.key) {
+          <li
+            class="flex items-center gap-1.5"
+            [class]="
+              rule.met
+                ? 'text-emerald-700 dark:text-emerald-400'
+                : 'text-slate-600 dark:text-slate-400'
+            "
+          >
+            <fa-icon
+              [icon]="rule.met ? metIcon : unmetIcon"
+              [class]="rule.met ? '' : 'text-[0.45rem]'"
+            />
+            {{ rule.label }}
+            <span class="sr-only">{{ rule.met ? '(met)' : '(not met)' }}</span>
+          </li>
+        }
+      </ul>
+    </app-form-field>
+
+    <app-form-field label="Confirm password" controlId="register-confirm" [error]="confirmError()">
+      <app-password-input
+        inputId="register-confirm"
+        [control]="form.controls.confirmPassword"
+        autocomplete="new-password"
+        [invalid]="!!confirmError()"
+        [describedBy]="describe('register-confirm', false, !!confirmError())"
+      />
+    </app-form-field>
+
+    <button type="submit" appButton size="lg" class="w-full" [disabled]="pending()">
+      @if (pending()) {
+        <app-spinner />
+        Creating account…
+      } @else {
+        Create account
+      }
+    </button>
+  </form>
+
+  <p class="mt-8 text-center text-sm text-slate-600 dark:text-slate-400">
+    Already have an account?
+    <a
+      routerLink="/login"
+      class="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300"
+      >Sign in</a
+    >
+  </p>
+</app-auth-layout>
