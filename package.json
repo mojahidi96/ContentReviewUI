@@ -12,7 +12,7 @@
     "dev": "concurrently -k -n api,web -c magenta,cyan \"npm:mock-api\" \"npm:start:mock\"",
     "mock-api": "node --watch --env-file-if-exists=.env mock-server/server.mjs",
     "test:ci": "ng test --watch=false",
-    "format": "prettier --write \"src/**/*.{ts,html,css}\" \"mock-server/**/*.mjs\""
+    "format": "prettier --write \"src/**/*.{ts,html,css,scss}\" \"mock-server/**/*.mjs\""
   },
   "private": true,
   "packageManager": "npm@11.17.0",

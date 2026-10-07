@@ -1,0 +1,52 @@
+<a
+  href="#main-content"
+  class="sr-only z-50 rounded-md bg-white px-3 py-2 text-sm font-medium text-brand-700 shadow focus:not-sr-only focus:fixed focus:top-2 focus:left-2 dark:bg-slate-900 dark:text-brand-300"
+  >Skip to content</a
+>
+<app-workspace-header
+  [user]="auth.user()"
+  [drawerOpen]="drawerOpen()"
+  [loggingOut]="loggingOut()"
+  (menuToggled)="openDrawer()"
+  (logoutRequested)="logout()"
+/>
+
+<div class="relative flex min-h-0 flex-1">
+  @if (showBackdrop()) {
+    <div
+      class="fixed inset-0 z-30 bg-slate-900/40 lg:hidden"
+      aria-hidden="true"
+      (click)="closeDrawer()"
+    ></div>
+  }
+
+  <aside
+    #sidebar
+    id="workspace-sidebar"
+    aria-label="Tools"
+    class="z-40 shrink-0 border-r border-slate-200 bg-white transition-[width,transform] duration-200 ease-out motion-reduce:transition-none max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:w-72 max-lg:shadow-xl dark:border-slate-800 dark:bg-slate-900"
+    [class]="sidebarClasses()"
+    [attr.inert]="drawerHidden() ? '' : null"
+  >
+    <app-side-panel
+      [collapsed]="compact()"
+      [collapsible]="viewport.isDesktop()"
+      [reviewing]="review.isLoading()"
+      [canReview]="auth.canEdit()"
+      (reviewRequested)="runReview()"
+      (collapseToggled)="toggleCollapsed()"
+      (navigated)="closeDrawer()"
+    />
+  </aside>
+
+  <!-- Read-only users have nothing focusable in the content, so the scroll area itself
+       takes focus to stay keyboard-scrollable. The "relative" class keeps absolutely positioned
+       descendants (e.g. sr-only text) inside this scroll area instead of stretching the page. -->
+  <main
+    id="main-content"
+    [attr.tabindex]="auth.canEdit() ? -1 : 0"
+    class="relative min-w-0 flex-1 overflow-y-auto focus:outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
+  >
+    <router-outlet />
+  </main>
+</div>

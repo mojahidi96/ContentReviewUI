@@ -110,7 +110,7 @@ The mock API reads an optional `.env` file. Copy `.env.example` to `.env` to cha
 ## Demo walkthrough
 
 1. **Auth:** visit `/workspace` while signed out and you are redirected to `/login?returnUrl=…`. Try submitting an empty form, a malformed email, a wrong password, or registering with `demo@example.com` (duplicate email).
-2. **Workspace:** the sample Q3 report is labelled **Sample document**. Editing it changes the label to **Edited draft · not saved**.
+2. **Workspace:** the sample Q3 report is labelled **Sample document · not saved**. Edit it and click **Save** (or press Ctrl/⌘+S): the text is stored in Node exactly as written, including indentation, tabs, blank lines and trailing spaces. The badge then shows **Saved**, and **Unsaved changes** after further edits. The URL gains `?document=<id>`, a reload reopens it, and after signing in your most recent document opens automatically. If the same document is saved from another tab first, you're asked to load the latest version instead of overwriting it.
 3. **Side panel:** collapse it to an icon rail with the control at the bottom; the setting is remembered. Below 1024 px it becomes a drawer, which opens from the ☰ button and closes with Escape or the backdrop.
 4. **Review:** click **Content Review**. While the review runs, the panel shows the stage reported by the server ("Checking spelling, grammar and language…", "Saving results…") and a live finding count, and the URL gains `?review=<id>`. The findings then appear as expanded cards showing the **Original** text, the **Improved** AI suggestion and an **Explanation**, and the document switches to **Review highlights**. Collapse cards individually from their header or with **Collapse all / Expand all**.
 5. **Inspect:** click a card's body to scroll to and highlight just that issue, with its suggestion in green beside it. **Show all issues** highlights every issue at once. Filter findings by category or status.
@@ -168,7 +168,7 @@ The suite is 19 files and 215 tests, all running against `HttpTestingController`
 
 ## Not in v1
 
-- Document persistence. Node has no endpoint for edited text, so edits stay as a local draft and each review stores a snapshot of what it reviewed (integration-status Q3).
+- A list of saved documents. Save, reopen-latest and `?document=` links work, but there is no page to browse older documents yet. Saving needs ContentReviewService's `feature/documents` branch.
 - Document upload and RAG chat. Neither the UI nor Node has them yet; a proposed contract is in [docs/api-contract.md §10.4](docs/api-contract.md#104-document-upload-and-rag-chat--q13).
 - Deleting reviews and choosing review categories. Node supports both; the UI does not offer them yet.
 - End-to-end browser tests. The flows above were verified manually with Playwright, and a Playwright suite would be the next addition.

@@ -6,12 +6,12 @@ export const AUTH_ROUTES: Routes = [
     path: 'login',
     canActivate: [guestGuard],
     title: 'Sign in · ContentReview',
-    loadComponent: () => import('./login.page').then((m) => m.LoginPage),
+    loadComponent: () => import('./login-page/login.page').then((m) => m.LoginPage),
   },
   {
     path: 'register',
     canActivate: [guestGuard],
     title: 'Create account · ContentReview',
-    loadComponent: () => import('./register.page').then((m) => m.RegisterPage),
+    loadComponent: () => import('./register-page/register.page').then((m) => m.RegisterPage),
   },
 ];

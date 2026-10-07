@@ -1,0 +1,103 @@
+<app-auth-layout
+  heading="Sign in"
+  subheading="Welcome back. Sign in to open your content workspace."
+>
+  @if (sessionExpired()) {
+    <div
+      class="mb-6 flex gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+      role="status"
+    >
+      <fa-icon [icon]="clockIcon" class="mt-0.5" />
+      <p>Your session has expired. Please sign in again to continue where you left off.</p>
+    </div>
+  }
+  @if (serverError(); as message) {
+    <div
+      class="mb-6 flex gap-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200"
+      role="alert"
+    >
+      <fa-icon [icon]="errorIcon" class="mt-0.5" />
+      <p>{{ message }}</p>
+    </div>
+  }
+
+  <form
+    [formGroup]="form"
+    (ngSubmit)="submit()"
+    novalidate
+    class="space-y-5"
+    [attr.aria-busy]="pending()"
+  >
+    <app-form-field label="Email" controlId="login-email" [error]="emailError()">
+      <input
+        id="login-email"
+        type="email"
+        formControlName="email"
+        autocomplete="email"
+        inputmode="email"
+        [class]="inputClasses"
+        [attr.aria-invalid]="!!emailError()"
+        [attr.aria-describedby]="describe('login-email', false, !!emailError())"
+      />
+    </app-form-field>
+
+    <app-form-field label="Password" controlId="login-password" [error]="passwordError()">
+      <app-password-input
+        inputId="login-password"
+        [control]="form.controls.password"
+        autocomplete="current-password"
+        [invalid]="!!passwordError()"
+        [describedBy]="describe('login-password', false, !!passwordError())"
+      />
+    </app-form-field>
+
+    <button type="submit" appButton size="lg" class="w-full" [disabled]="pending()">
+      @if (pendingAction() === 'login') {
+        <app-spinner />
+        Signing in…
+      } @else {
+        Sign in
+      }
+    </button>
+  </form>
+
+  @if (guestLogin) {
+    <div class="my-6 flex items-center gap-3" aria-hidden="true">
+      <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+      <span class="text-xs text-slate-600 uppercase dark:text-slate-400">or</span>
+      <span class="h-px flex-1 bg-slate-200 dark:bg-slate-700"></span>
+    </div>
+
+    <button
+      type="button"
+      appButton
+      variant="secondary"
+      size="lg"
+      class="w-full"
+      data-testid="guest-login"
+      aria-describedby="guest-login-hint"
+      [disabled]="pending()"
+      (click)="continueAsGuest()"
+    >
+      @if (pendingAction() === 'guest') {
+        <app-spinner />
+        Starting guest session…
+      } @else {
+        <fa-icon [icon]="guestIcon" />
+        Continue as guest
+      }
+    </button>
+    <p id="guest-login-hint" class="mt-2 text-center text-xs text-slate-600 dark:text-slate-400">
+      No account needed. Your work is discarded when you sign out.
+    </p>
+  }
+
+  <p class="mt-8 text-center text-sm text-slate-600 dark:text-slate-400">
+    New to ContentReview?
+    <a
+      routerLink="/register"
+      class="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300"
+      >Create an account</a
+    >
+  </p>
+</app-auth-layout>

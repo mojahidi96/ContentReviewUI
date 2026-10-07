@@ -1,0 +1,20 @@
+<label
+  [for]="controlId()"
+  class="mb-1.5 block text-sm font-medium text-slate-800 dark:text-slate-200"
+  >{{ label() }}</label
+>
+<ng-content />
+@if (hint()) {
+  <p [id]="controlId() + '-hint'" class="mt-1.5 text-xs text-slate-600 dark:text-slate-400">
+    {{ hint() }}
+  </p>
+}
+@if (error()) {
+  <p
+    [id]="controlId() + '-error'"
+    class="mt-1.5 flex items-start gap-1.5 text-sm text-red-700 dark:text-red-400"
+  >
+    <fa-icon [icon]="errorIcon" class="mt-0.5" />
+    <span>{{ error() }}</span>
+  </p>
+}
