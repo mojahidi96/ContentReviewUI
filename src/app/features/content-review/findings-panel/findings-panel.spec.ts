@@ -8,9 +8,11 @@ import {
   flushCsrf,
   makeFinding,
   provideTestHttp,
+  reviewBody,
 } from '../../../testing/test-providers';
 import { DocumentService } from '../../workspace/document.service';
 import { FindingsPanel } from './findings-panel';
+import { ModelSelection } from '../model-selection';
 import { ReviewStore } from '../review.store';
 
 describe('FindingsPanel', () => {
@@ -25,7 +27,7 @@ describe('FindingsPanel', () => {
   beforeEach(async () => {
     TestBed.configureTestingModule({
       imports: [FindingsPanel],
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     http = TestBed.inject(HttpTestingController);
     doc = TestBed.inject(DocumentService);
@@ -55,7 +57,7 @@ describe('FindingsPanel', () => {
     expect(el.textContent).toContain('took longer than expected');
     expect(doc.content()).toBe('the teh cat');
 
-    button('Retry review')!.click();
+    button('Retry')!.click();
     await fixture.whenStable();
     completeReviewFlow(http, 'the teh cat', [makeFinding()]);
     await fixture.whenStable();
@@ -76,6 +78,34 @@ describe('FindingsPanel', () => {
     completeReviewFlow(http, 'the teh cat', findings);
     await fixture.whenStable();
   };
+
+  it('shows which model produced the review', async () => {
+    TestBed.inject(ReviewStore).submit();
+    completeReviewFlow(http, 'the teh cat', [makeFinding()]);
+    await fixture.whenStable();
+    expect(el.querySelector('[data-testid=review-model]')?.textContent).toContain('Default model');
+  });
+
+  it('shows a quota failure with the reset time instead of a generic error', async () => {
+    TestBed.inject(ReviewStore).loadReview(REVIEW_ID);
+    http.expectOne(`/api/v1/reviews/${REVIEW_ID}`).flush(
+      reviewBody('the teh cat', [], {
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'The daily quota is exhausted.',
+        errorDetails: {
+          model: 'gemini-3.6-flash',
+          quotaScope: 'daily',
+          resetAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        },
+      }),
+    );
+    await fixture.whenStable();
+    expect(el.textContent).toContain('AI quota reached');
+    expect(el.textContent).toContain('The daily quota is exhausted.');
+    expect(el.querySelector('[data-testid=quota-reset]')?.textContent).toContain('Resets at');
+    expect(el.querySelector<HTMLButtonElement>('[data-testid=retry-review]')!.disabled).toBe(true);
+  });
 
   it('accepts and undoes locally, without confirmation or API calls', async () => {
     await showReview();

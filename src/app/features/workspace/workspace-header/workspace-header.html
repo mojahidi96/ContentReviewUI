@@ -18,6 +18,12 @@
 </p>
 
 <div class="ml-auto flex items-center gap-3">
+  @if (isAuthor()) {
+    <a appButton routerLink="/workspace/write" size="sm" class="rounded-full">
+      <fa-icon [icon]="writeIcon" />
+      Write
+    </a>
+  }
   @if (user(); as user) {
     <div class="flex items-center gap-3">
       <span class="hidden sm:block">

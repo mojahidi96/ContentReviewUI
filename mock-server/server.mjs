@@ -9,6 +9,8 @@
  *   - POST /auth/guest              temporary guest author
  *   - User.role ("reader")          the seeded read-only account
  *   - User.guest
+ *   - POST /auth/otp/request, /auth/otp/login, /auth/password/forgot, /auth/password/reset
+ *                                   4-digit email codes; the mock prints them to this console
  *
  * Environment variables:
  *   PORT                       (default 3000)
@@ -16,13 +18,22 @@
  *                              demo accounts are not reachable from the network)
  *   MOCK_LATENCY_MS            base latency for every response (default 300)
  *   MOCK_REVIEW_LATENCY_MS     simulated analysis time per review (default 1200)
+ *   MOCK_EXHAUSTED_MODELS      comma-separated model ids whose daily quota is "used up": reviews with
+ *                              them fail with LLM_SERVICE_RATE_LIMITED (default none)
  *   MOCK_REVIEW_FAILURE_RATE   0..1 probability that a review ends in review.failed (default 0)
  *   MOCK_SESSION_TTL_MS        session lifetime (default 15 minutes, like AUTH_TOKEN_TTL)
  *   COOKIE_SECURE              "true" to mark cookies Secure (default false, like Node in dev)
  */
 import cookieParser from 'cookie-parser';
 import express from 'express';
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  scryptSync,
+  timingSafeEqual,
+} from 'node:crypto';
 import { analyze } from './review-rules.mjs';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -47,6 +58,14 @@ const FINDING_TRANSITIONS = {
 };
 const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HEARTBEAT_MS = 15_000;
+const REVIEW_MODELS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.8-pro'];
+const DEFAULT_MODEL = REVIEW_MODELS[0];
+const EXHAUSTED_MODELS = new Set(
+  (process.env.MOCK_EXHAUSTED_MODELS ?? '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean),
+);
 const SSE_RETRY_MS = 3_000;
 
 // ---------------------------------------------------------------- storage
@@ -66,6 +85,10 @@ const reviewEvents = new Map();
 const listeners = new Map();
 /** Saved author documents, keyed by documentId. Content is stored exactly as sent. */
 const documents = new Map();
+/** One-time codes (mock-only), keyed by `<purpose>:<email>`. */
+const otps = new Map();
+const OTP_TTL_MS = Number(process.env.MOCK_OTP_TTL_MS ?? 5 * 60 * 1000);
+const OTP_MAX_ATTEMPTS = 5;
 
 const hex24 = () => randomBytes(12).toString('hex');
 const nowIso = () => new Date().toISOString();
@@ -267,6 +290,105 @@ api.post('/auth/login', csrfProtect, (req, res) => {
   res.set('Cache-Control', 'no-store').json({ user: publicUser(user), csrfToken });
 });
 
+// ---------------------------------------------------------------- one-time codes (MOCK-ONLY)
+const PASSWORD_RULE_DETAILS = (password) => {
+  if (typeof password !== 'string' || password.length < 12)
+    return [{ path: 'body.newPassword', message: 'Password must be at least 12 characters' }];
+  if (Buffer.byteLength(password, 'utf8') > 72)
+    return [{ path: 'body.newPassword', message: 'Password must be at most 72 bytes' }];
+  return [];
+};
+
+const validEmail = (email) =>
+  typeof email === 'string' && email.length <= 254 && EMAIL_RULE.test(email.trim());
+
+/** Creates a 4-digit code for a registered email and "sends" it by printing it. */
+function sendOtp(purpose, email) {
+  const key = `${purpose}:${email.trim().toLowerCase()}`;
+  const user = usersByEmail.get(email.trim().toLowerCase());
+  if (!user) return;
+  const code = String(randomInt(0, 10_000)).padStart(4, '0');
+  otps.set(key, { code, expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 });
+  console.log(`[mock-api] ${purpose} code for ${user.email}: ${code}`);
+}
+
+/** Returns the user when the code is right; otherwise sends the error response and returns null. */
+function consumeOtp(req, res, purpose, email, code) {
+  const key = `${purpose}:${email.trim().toLowerCase()}`;
+  const entry = otps.get(key);
+  if (!entry || entry.expiresAt < Date.now()) {
+    otps.delete(key);
+    fail(req, res, 401, 'OTP_INVALID', 'The code is invalid or has expired.');
+    return null;
+  }
+  if (entry.attempts >= OTP_MAX_ATTEMPTS) {
+    otps.delete(key);
+    fail(req, res, 429, 'RATE_LIMITED', 'Too many attempts. Request a new code.');
+    return null;
+  }
+  entry.attempts += 1;
+  const ok =
+    typeof code === 'string' &&
+    code.length === 4 &&
+    timingSafeEqual(Buffer.from(code), Buffer.from(entry.code));
+  if (!ok) {
+    fail(req, res, 401, 'OTP_INVALID', 'The code is invalid or has expired.');
+    return null;
+  }
+  otps.delete(key);
+  return usersByEmail.get(email.trim().toLowerCase());
+}
+
+/** Both request endpoints answer 202 whether or not the email exists, so accounts can't be probed. */
+const otpRequest = (purpose) => (req, res) => {
+  const details = unknownKeys(req.body, ['email']);
+  if (!validEmail(req.body?.email))
+    details.push({ path: 'body.email', message: 'Must be a valid email address' });
+  if (details.length) return validation(req, res, details);
+  sendOtp(purpose, req.body.email);
+  res
+    .status(202)
+    .set('Cache-Control', 'no-store')
+    .json({ expiresInSeconds: OTP_TTL_MS / 1000 });
+};
+
+api.post('/auth/otp/request', csrfProtect, otpRequest('login'));
+api.post('/auth/password/forgot', csrfProtect, otpRequest('reset'));
+
+api.post('/auth/otp/login', csrfProtect, (req, res) => {
+  const { email, otp } = req.body ?? {};
+  const details = unknownKeys(req.body, ['email', 'otp']);
+  if (!validEmail(email))
+    details.push({ path: 'body.email', message: 'Must be a valid email address' });
+  if (typeof otp !== 'string' || !/^\d{4}$/.test(otp))
+    details.push({ path: 'body.otp', message: 'Must be 4 digits' });
+  if (details.length) return validation(req, res, details);
+  const user = consumeOtp(req, res, 'login', email, otp);
+  if (!user) return;
+  const csrfToken = startSession(req, res, user);
+  res.set('Cache-Control', 'no-store').json({ user: publicUser(user), csrfToken });
+});
+
+api.post('/auth/password/reset', csrfProtect, (req, res) => {
+  const { email, otp, newPassword } = req.body ?? {};
+  const details = unknownKeys(req.body, ['email', 'otp', 'newPassword']);
+  if (!validEmail(email))
+    details.push({ path: 'body.email', message: 'Must be a valid email address' });
+  if (typeof otp !== 'string' || !/^\d{4}$/.test(otp))
+    details.push({ path: 'body.otp', message: 'Must be 4 digits' });
+  details.push(...PASSWORD_RULE_DETAILS(newPassword));
+  if (details.length) return validation(req, res, details);
+  const user = consumeOtp(req, res, 'reset', email, otp);
+  if (!user) return;
+  Object.assign(user, hashPassword(newPassword));
+  // A password reset signs the user in, and any other session for the account is revoked.
+  for (const [sid, session] of sessions) {
+    if (session.userId === user.id) endSession(sid);
+  }
+  const csrfToken = startSession(req, res, user);
+  res.set('Cache-Control', 'no-store').json({ user: publicUser(user), csrfToken });
+});
+
 /** MOCK-ONLY: starts a session for a new temporary guest author. Not in the Node service. */
 api.post('/auth/guest', csrfProtect, (req, res) => {
   const user = {
@@ -303,6 +425,8 @@ const summary = (r) => ({
   findingCount: r.findingCount,
   errorCode: r.errorCode,
   errorMessage: r.errorMessage,
+  errorDetails: r.errorDetails ?? null,
+  model: r.model ?? null,
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
   completedAt: r.completedAt,
@@ -341,6 +465,21 @@ async function processReview(review) {
   emit(review, 'review.progress', { stage: 'analyzing', attempt: 1 });
   await sleep(REVIEW_LATENCY_MS);
   if (!reviews.has(review.reviewId)) return;
+  const usedModel = review.model ?? DEFAULT_MODEL;
+  if (EXHAUSTED_MODELS.has(usedModel)) {
+    const resetAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const errorCode = 'LLM_SERVICE_RATE_LIMITED';
+    const errorMessage = `The daily quota for model ${usedModel} is exhausted. It resets in about 2h. Try again later or choose a different model.`;
+    const errorDetails = {
+      model: usedModel,
+      quotaScope: 'daily',
+      retryAfterSeconds: 7200,
+      resetAt,
+    };
+    setStatus(review, 'failed', { errorCode, errorMessage, errorDetails });
+    emit(review, 'review.failed', { status: 'failed', errorCode, errorMessage, errorDetails });
+    return;
+  }
   if (Math.random() < FAILURE_RATE) {
     const errorCode = 'LLM_SERVICE_UNAVAILABLE';
     const errorMessage = 'The analysis service is temporarily unavailable.';
@@ -386,9 +525,15 @@ function ownedReview(req, res) {
 
 api.use('/reviews', requireAuth);
 
+api.get('/reviews/models', (_req, res) =>
+  res.set('Cache-Control', 'no-store').json({ defaultModel: DEFAULT_MODEL, models: REVIEW_MODELS }),
+);
+
 api.post('/reviews', csrfProtect, (req, res) => {
-  const { documentTitle, content, categories } = req.body ?? {};
-  const details = unknownKeys(req.body, ['documentTitle', 'content', 'categories']);
+  const { documentTitle, content, categories, model } = req.body ?? {};
+  const details = unknownKeys(req.body, ['documentTitle', 'content', 'categories', 'model']);
+  if (model !== undefined && !REVIEW_MODELS.includes(model))
+    details.push({ path: 'model', message: 'This model is not available.' });
   if (
     typeof documentTitle !== 'string' ||
     !documentTitle.trim() ||
@@ -426,6 +571,8 @@ api.post('/reviews', csrfProtect, (req, res) => {
     findingCount: 0,
     errorCode: null,
     errorMessage: null,
+    errorDetails: null,
+    model: model && model !== DEFAULT_MODEL ? model : null,
     createdAt,
     updatedAt: createdAt,
     completedAt: null,

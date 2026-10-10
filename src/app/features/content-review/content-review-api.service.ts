@@ -2,7 +2,13 @@ import { HttpClient } from '@angular/common/http';
 import { Service, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
-import { toCreatedReview, toReview, toReviewPage, toUpdatedFinding } from './review.mappers';
+import {
+  toCreatedReview,
+  toReview,
+  toReviewModels,
+  toReviewPage,
+  toUpdatedFinding,
+} from './review.mappers';
 import type {
   CreateReviewRequest,
   CreateReviewRequestDto,
@@ -10,6 +16,7 @@ import type {
   Finding,
   FindingActionDto,
   Review,
+  ReviewModels,
   ReviewPage,
   ReviewStatus,
   UpdateFindingRequestDto,
@@ -31,8 +38,14 @@ export class ContentReviewApiService {
       documentTitle: request.title,
       content: request.content,
       categories: request.categories,
+      ...(request.model ? { model: request.model } : {}),
     };
     return this.http.post<unknown>(this.baseUrl, body).pipe(map(toCreatedReview));
+  }
+
+  /** Models an author may pick for a review (`503` when the list is unavailable). */
+  getModels(): Observable<ReviewModels> {
+    return this.http.get<unknown>(`${this.baseUrl}/models`).pipe(map(toReviewModels));
   }
 
   listReviews(page: number, limit: number, status?: ReviewStatus): Observable<ReviewPage> {

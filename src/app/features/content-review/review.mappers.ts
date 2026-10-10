@@ -2,11 +2,15 @@ import { InvalidResponseError } from '../../core/http/api-error';
 import {
   REVIEW_STATUSES,
   type CreatedReview,
+  QUOTA_ERROR_CODE,
   type Finding,
   type FindingDto,
   type FindingSeverity,
   type ReviewEventPayloads,
   type ReviewEventType,
+  type ReviewFailure,
+  type ReviewModels,
+  type QuotaScope,
   type ReviewPage,
   type ReviewStatus,
   type Review,
@@ -66,13 +70,54 @@ export function toReview(body: unknown): Review {
   const findings = field(dto, 'findings', Array.isArray, 'review.findings').map((f, i) =>
     toFinding(findingDto(f, `review.findings[${i}]`), content),
   );
+  const summary = summaryFields(dto, 'review');
   return {
-    ...summaryFields(dto, 'review'),
+    ...summary,
+    failure: toFailure(summary.errorCode, dto['errorMessage'], dto['errorDetails']),
     categories: field(dto, 'categories', isStringArray, 'review.categories'),
     content,
     contentLength: field(dto, 'contentLength', isCount, 'review.contentLength'),
     findings,
   };
+}
+
+/**
+ * Builds the failure shown for a failed review. Older reviews have no `errorDetails`, and any
+ * field inside may be missing, so nothing here is required.
+ */
+export function toFailure(
+  code: string | null,
+  message: unknown,
+  details: unknown,
+  now = Date.now(),
+): ReviewFailure | null {
+  if (code === null) return null;
+  const text = typeof message === 'string' && message.trim() ? message : null;
+  if (code !== QUOTA_ERROR_CODE) return { code, message: text, quota: null };
+  const d = isRecord(details) ? details : {};
+  const resetAt = typeof d['resetAt'] === 'string' ? Date.parse(d['resetAt']) : NaN;
+  const retryAfter = d['retryAfterSeconds'];
+  const scope = d['quotaScope'];
+  return {
+    code,
+    message: text,
+    quota: {
+      model: typeof d['model'] === 'string' && d['model'] ? d['model'] : null,
+      scope: scope === 'daily' || scope === 'minute' ? (scope as QuotaScope) : 'unknown',
+      resetAtMs: Number.isFinite(resetAt)
+        ? resetAt
+        : typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter >= 0
+          ? now + retryAfter * 1000
+          : null,
+    },
+  };
+}
+
+export function toReviewModels(body: unknown): ReviewModels {
+  const defaultModel = field(body, 'defaultModel', isString, 'models.defaultModel');
+  const models = field(body, 'models', isStringArray, 'models.models');
+  if (!models.includes(defaultModel)) throw new InvalidResponseError('models.defaultModel');
+  return { defaultModel, models };
 }
 
 export function toReviewPage(body: unknown): ReviewPage {
@@ -144,6 +189,8 @@ function summaryFields(dto: Record<string, unknown>, what: string): ReviewSummar
     status: field(dto, 'status', isReviewStatus, `${what}.status`),
     findingCount: field(dto, 'findingCount', isCount, `${what}.findingCount`),
     errorCode: field(dto, 'errorCode', isStringOrNull, `${what}.errorCode`),
+    // Absent on older servers; `null` means the default model.
+    model: typeof dto['model'] === 'string' ? dto['model'] : null,
   };
 }
 

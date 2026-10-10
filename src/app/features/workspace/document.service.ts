@@ -146,6 +146,15 @@ export class DocumentService {
     });
   }
 
+  /**
+   * Makes an already fetched saved document the open one, replacing the editor contents.
+   * Used when another page (the article view) hands a document over to the editor.
+   */
+  adopt(doc: SavedDocument): void {
+    this.restored = true;
+    this.apply(doc);
+  }
+
   /** Throws away local edits and loads the version currently stored in Node. */
   reloadSaved(): void {
     const id = this.documentId();

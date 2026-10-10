@@ -134,7 +134,11 @@ export function toApiError(error: unknown): ApiError {
   };
 }
 
-/** Keeps the first message per body field; `body.email` → `email`. Non-body paths are dropped. */
+/**
+ * Keeps the first message per body field; `body.email` → `email`. A bare top-level path such as
+ * `model` (how the review endpoints report it) counts as a body field too. Other locations
+ * (`query.page`, …) are dropped.
+ */
 function toFieldErrors(
   details: readonly ApiErrorDetail[] | undefined,
 ): Readonly<Record<string, string>> | undefined {
@@ -144,8 +148,9 @@ function toFieldErrors(
   const result: Record<string, string> = {};
   for (const detail of details) {
     if (typeof detail?.path !== 'string' || typeof detail.message !== 'string') continue;
-    const [location, field] = detail.path.split('.');
-    if (location === 'body' && field && !(field in result)) {
+    const segments = detail.path.split('.');
+    const field = segments[0] === 'body' ? segments[1] : segments.length === 1 ? segments[0] : '';
+    if (field && !(field in result)) {
       result[field] = detail.message;
     }
   }

@@ -27,6 +27,21 @@ export interface RegisterRequest {
   readonly password: string;
 }
 
+/** Body of `POST /auth/password/reset`: the emailed code plus the new password. */
+export interface PasswordResetRequest {
+  readonly email: string;
+  readonly otp: string;
+  readonly newPassword: string;
+}
+
+export interface OtpLoginRequest {
+  readonly email: string;
+  readonly otp: string;
+}
+
+/** Which emailed code is being requested. */
+export type OtpPurpose = 'login' | 'reset';
+
 // ---------------------------------------------------------------- wire format (Node v1)
 
 /** `User` as returned by Node. `role` and `guest` are proposed extensions Node does not send. */

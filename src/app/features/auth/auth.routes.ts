@@ -14,4 +14,18 @@ export const AUTH_ROUTES: Routes = [
     title: 'Create account · ContentReview',
     loadComponent: () => import('./register-page/register.page').then((m) => m.RegisterPage),
   },
+  {
+    path: 'login/code',
+    canActivate: [guestGuard],
+    title: 'Sign in with a code · ContentReview',
+    data: { mode: 'login' },
+    loadComponent: () => import('./otp-page/otp.page').then((m) => m.OtpPage),
+  },
+  {
+    path: 'forgot-password',
+    canActivate: [guestGuard],
+    title: 'Reset password · ContentReview',
+    data: { mode: 'reset' },
+    loadComponent: () => import('./otp-page/otp.page').then((m) => m.OtpPage),
+  },
 ];

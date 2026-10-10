@@ -144,6 +144,8 @@ export function makeReview(
     contentLength: content.length,
     findings,
     errorCode: null,
+    failure: null,
+    model: null,
     ...overrides,
   };
 }
@@ -180,6 +182,8 @@ export function makeReviewDto(
     findingCount: findings.length,
     errorCode: null,
     errorMessage: null,
+    errorDetails: null,
+    model: null,
     createdAt: '2026-10-01T10:00:00.000Z',
     updatedAt: '2026-10-01T10:00:00.000Z',
     completedAt: '2026-10-01T10:00:05.000Z',

@@ -12,6 +12,7 @@ import {
   signIn,
 } from '../../../testing/test-providers';
 import type { User } from '../../../core/auth/auth.models';
+import { ModelSelection } from '../../content-review/model-selection';
 import { ReviewStore } from '../../content-review/review.store';
 import { DocumentPage } from './document.page';
 import { DocumentService } from '../document.service';
@@ -19,7 +20,7 @@ import { DocumentService } from '../document.service';
 describe('DocumentPage', () => {
   const render = async (user: User, reviewParam?: string, documentParam?: string) => {
     TestBed.configureTestingModule({
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     signIn(user);
     TestBed.inject(DocumentService).setContent('Quarterly report text.');

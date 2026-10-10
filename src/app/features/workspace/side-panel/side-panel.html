@@ -17,6 +17,9 @@
         <span>{{ reviewing() ? 'Reviewing…' : 'Content Review' }}</span>
       }
     </button>
+    @if (!collapsed()) {
+      <app-model-picker class="mt-3" />
+    }
   </div>
 }
 

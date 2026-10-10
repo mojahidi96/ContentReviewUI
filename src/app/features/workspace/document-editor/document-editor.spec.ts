@@ -1,6 +1,7 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { flushCsrf, provideTestHttp } from '../../../testing/test-providers';
+import { ModelSelection } from '../../content-review/model-selection';
 import { ReviewStore } from '../../content-review/review.store';
 import { DocumentEditor } from './document-editor';
 import { DocumentService } from '../document.service';
@@ -32,7 +33,7 @@ describe('DocumentEditor saving', () => {
   beforeEach(async () => {
     TestBed.configureTestingModule({
       imports: [DocumentEditor],
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     http = TestBed.inject(HttpTestingController);
     doc = TestBed.inject(DocumentService);

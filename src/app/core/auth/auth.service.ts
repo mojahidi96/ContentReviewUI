@@ -10,6 +10,9 @@ import {
   type AuthStatus,
   type LoginRequest,
   type MeResponseDto,
+  type OtpLoginRequest,
+  type OtpPurpose,
+  type PasswordResetRequest,
   type RegisterRequest,
   type RegisterRequestDto,
   type SessionResponseDto,
@@ -70,6 +73,35 @@ export class AuthService {
     };
     return this.startSession(
       this.http.post<SessionResponseDto>(`${this.baseUrl}/register`, body, {
+        context: this.expectedAuthFailure(),
+      }),
+    );
+  }
+
+  /**
+   * Emails a 4-digit code. **Not part of the verified Node contract** (🟡 proposed). The server
+   * answers the same way for unknown emails, so this never reveals whether an account exists.
+   */
+  requestOtp(purpose: OtpPurpose, email: string): Observable<void> {
+    const path = purpose === 'login' ? 'otp/request' : 'password/forgot';
+    return this.http
+      .post(`${this.baseUrl}/${path}`, { email }, { context: this.expectedAuthFailure() })
+      .pipe(map(() => undefined));
+  }
+
+  /** Signs in with an emailed code. */
+  loginWithOtp(request: OtpLoginRequest): Observable<User> {
+    return this.startSession(
+      this.http.post<SessionResponseDto>(`${this.baseUrl}/otp/login`, request, {
+        context: this.expectedAuthFailure(),
+      }),
+    );
+  }
+
+  /** Sets a new password using an emailed code, then signs the user in. */
+  resetPassword(request: PasswordResetRequest): Observable<User> {
+    return this.startSession(
+      this.http.post<SessionResponseDto>(`${this.baseUrl}/password/reset`, request, {
         context: this.expectedAuthFailure(),
       }),
     );

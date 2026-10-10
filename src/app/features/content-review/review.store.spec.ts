@@ -12,7 +12,8 @@ import {
   reviewBody,
 } from '../../testing/test-providers';
 import { DocumentService } from '../workspace/document.service';
-import type { Finding, ReviewStatus } from './review.models';
+import { ModelSelection } from './model-selection';
+import type { Finding, ReviewErrorDetailsDto, ReviewStatus } from './review.models';
 import { ReviewStore } from './review.store';
 
 const AT = '2026-10-01T10:00:00.000Z';
@@ -85,7 +86,7 @@ describe('ReviewStore', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     store = TestBed.inject(ReviewStore);
     doc = TestBed.inject(DocumentService);
@@ -220,28 +221,198 @@ describe('ReviewStore', () => {
     });
   });
 
+  describe('model selection and quota failures', () => {
+    const MODELS = {
+      defaultModel: 'gemini-3.6-flash',
+      models: ['gemini-3.6-flash', 'gemini-3.8-flash'],
+    };
+    let models: ModelSelection;
+    const loadModels = () => {
+      models = TestBed.inject(ModelSelection);
+      models.load();
+      http.expectOne('/api/v1/reviews/models').flush(MODELS);
+    };
+
+    it('omits model when the default is selected', () => {
+      loadModels();
+      store.submit();
+      expect(expectCreate().request.body).not.toHaveProperty('model');
+    });
+
+    it('sends the chosen model', () => {
+      loadModels();
+      models.select('gemini-3.8-flash');
+      store.submit();
+      expect(expectCreate().request.body.model).toBe('gemini-3.8-flash');
+    });
+
+    it('resets to the default and says so when the server rejects the model', () => {
+      loadModels();
+      models.select('gemini-3.8-flash');
+      store.submit();
+      expectCreate().flush(
+        {
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'x',
+            details: [{ path: 'model', message: 'This model is not available.' }],
+          },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      expect(store.phase()).toBe('error');
+      expect(store.error()).toBe('That model is no longer available. Please choose another.');
+      expect(models.selected()).toBe('gemini-3.6-flash');
+      http.expectOne('/api/v1/reviews/models').flush(MODELS); // list refreshed
+    });
+
+    it('exposes a quota failure and marks the model so another can be chosen', () => {
+      loadModels();
+      store.submit();
+      const source = accept202();
+      const resetAt = '2026-10-11T05:30:00+00:00';
+      const details: ReviewErrorDetailsDto = {
+        model: 'gemini-3.6-flash',
+        quotaScope: 'daily',
+        retryAfterSeconds: 7105,
+        resetAt,
+      };
+      source.emit('review.failed', 1, {
+        reviewId: REVIEW_ID,
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'The daily quota for model gemini-3.6-flash is exhausted.',
+        errorDetails: details,
+        occurredAt: AT,
+      });
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'The daily quota for model gemini-3.6-flash is exhausted.',
+          errorDetails: details,
+        }),
+      );
+      expect(store.error()).toBe('The daily quota for model gemini-3.6-flash is exhausted.');
+      expect(store.failure()?.quota).toEqual({
+        model: 'gemini-3.6-flash',
+        scope: 'daily',
+        resetAtMs: Date.parse(resetAt),
+      });
+      expect(models.options()[0].quotaReached).toBe(true);
+      expect(models.selected()).toBe('gemini-3.8-flash');
+    });
+
+    it('falls back to the plain message when an older failed review has no errorDetails', () => {
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Too busy right now.',
+        }),
+      );
+      expect(store.error()).toBe('Too busy right now.');
+      expect(store.failure()?.quota).toEqual({ model: null, scope: 'unknown', resetAtMs: null });
+    });
+
+    it('computes the reset time from retryAfterSeconds when resetAt is missing', () => {
+      const before = Date.now();
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Slow down.',
+          errorDetails: { quotaScope: 'minute', retryAfterSeconds: 30 },
+        }),
+      );
+      const reset = store.failure()!.quota!.resetAtMs!;
+      expect(reset).toBeGreaterThanOrEqual(before + 30_000);
+      expect(reset).toBeLessThan(before + 40_000);
+    });
+
+    it('"Try another model" switches to the next available model and reviews again', () => {
+      loadModels();
+      store.submit();
+      const source = accept202();
+      const failed = {
+        status: 'failed' as const,
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'Quota reached.',
+        errorDetails: { model: 'gemini-3.6-flash', quotaScope: 'daily' as const },
+      };
+      source.emit('review.failed', 1, { reviewId: REVIEW_ID, ...failed, occurredAt: AT });
+      http.expectOne(reviewUrl()).flush(reviewBody(CONTENT, [], failed));
+      expect(store.phase()).toBe('error');
+
+      store.tryAnotherModel();
+      expect(store.phase()).toBe('loading');
+      const req = http.expectOne({ method: 'POST', url: '/api/v1/reviews' });
+      expect(req.request.body.model).toBe('gemini-3.8-flash');
+    });
+
+    it('does nothing when no other model has quota left', () => {
+      loadModels();
+      models.markQuotaReached('gemini-3.8-flash', null);
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Quota reached.',
+          errorDetails: { model: 'gemini-3.6-flash', quotaScope: 'daily' },
+        }),
+      );
+      store.tryAnotherModel();
+      expect(store.phase()).toBe('error');
+    });
+
+    it('keeps a review’s model on the loaded review', () => {
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(reviewBody(CONTENT, [], { model: 'gemini-3.8-flash' }));
+      expect(store.review()?.model).toBe('gemini-3.8-flash');
+    });
+  });
+
   describe('errors, reconnection and retry', () => {
-    it('shows fixed copy for a failed review, never the backend message', () => {
+    it('shows the failed review’s user-safe errorMessage as sent', () => {
       store.submit();
       const source = accept202();
       source.emit('review.failed', 1, {
         reviewId: REVIEW_ID,
         status: 'failed',
         errorCode: 'LLM_SERVICE_UNAVAILABLE',
-        errorMessage: 'python said: gemini quota exceeded',
+        errorMessage: 'The review service is down for maintenance.',
         occurredAt: AT,
       });
       http.expectOne(reviewUrl()).flush(
         reviewBody(CONTENT, [], {
           status: 'failed',
           errorCode: 'LLM_SERVICE_UNAVAILABLE',
-          errorMessage: 'python said: gemini quota exceeded',
+          errorMessage: 'The review service is down for maintenance.',
         }),
       );
       expect(store.phase()).toBe('error');
-      expect(store.error()).toMatch(/temporarily unavailable/i);
-      expect(store.error()).not.toMatch(/python|gemini/i);
+      expect(store.error()).toBe('The review service is down for maintenance.');
+      expect(store.failure()?.quota).toBeNull();
       expect(doc.content()).toBe(CONTENT);
+    });
+
+    it('falls back to fixed copy when a failed review has no errorMessage', () => {
+      store.submit();
+      const source = accept202();
+      source.emit('review.failed', 1, {
+        reviewId: REVIEW_ID,
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_UNAVAILABLE',
+        errorMessage: '',
+        occurredAt: AT,
+      });
+      http
+        .expectOne(reviewUrl())
+        .flush(reviewBody(CONTENT, [], { status: 'failed', errorCode: 'LLM_SERVICE_UNAVAILABLE' }));
+      expect(store.error()).toMatch(/temporarily unavailable/i);
     });
 
     it('maps request errors and reports network failures', () => {

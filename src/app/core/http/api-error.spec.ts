@@ -41,6 +41,20 @@ describe('toApiError', () => {
     });
   });
 
+  it('keeps a bare top-level path such as `model` as a field error', () => {
+    const error = new HttpErrorResponse({
+      status: 400,
+      error: {
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'invalid',
+          details: [{ path: 'model', message: 'This model is not available.' }],
+        },
+      },
+    });
+    expect(toApiError(error).fieldErrors).toEqual({ model: 'This model is not available.' });
+  });
+
   it('reads Retry-After and X-Request-Id headers', () => {
     const error = new HttpErrorResponse({
       status: 429,

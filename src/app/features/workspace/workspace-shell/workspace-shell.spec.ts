@@ -37,6 +37,11 @@ describe('WorkspaceShell', () => {
     fixture = TestBed.createComponent(WorkspaceShell);
     el = fixture.nativeElement;
     await fixture.whenStable();
+    // Authors' model list is loaded when the workspace opens.
+    http
+      .expectOne('/api/v1/reviews/models')
+      .flush({ defaultModel: 'gemini-3.6-flash', models: ['gemini-3.6-flash'] });
+    await fixture.whenStable();
   });
 
   afterEach(() => http.verify());

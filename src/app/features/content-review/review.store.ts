@@ -22,16 +22,18 @@ import {
 import { NotificationService } from '../../core/notifications/notification.service';
 import { DocumentService } from '../workspace/document.service';
 import { ContentReviewApiService } from './content-review-api.service';
+import { ModelSelection } from './model-selection';
 import { ReviewEventsService, ReviewStreamClosedError } from './review-events.service';
 import { codePointLength } from './review.mappers';
-import type {
-  Finding,
-  FindingCategory,
-  FindingStatus,
-  ProgressStage,
-  Review,
-  ReviewProgress,
-  TextRange,
+import {
+  type Finding,
+  type FindingCategory,
+  type FindingStatus,
+  type ProgressStage,
+  type Review,
+  type ReviewFailure,
+  type ReviewProgress,
+  type TextRange,
 } from './review.models';
 import { applyReplacements, mapRange, normalizeRange, type TextReplacement } from './text-ranges';
 
@@ -50,9 +52,12 @@ const ALL_FILTERS: FindingFilters = { category: 'all', status: 'all' };
 const UNAVAILABLE =
   'The review service is temporarily unavailable. Your document has not changed — try again in a moment.';
 
+const MODEL_REJECTED = 'That model is no longer available. Please choose another.';
+
 /**
- * Fixed copy for request errors and for Node's processing `errorCode`s. Backend messages
- * (including the `errorMessage` of a failed review) are never shown verbatim.
+ * Fixed copy for request errors, and the fallback for a failed review's `errorCode` when Node
+ * sent no `errorMessage`. A failed review's `errorMessage` is user-safe and shown as sent; other
+ * backend messages are never shown verbatim.
  */
 const REVIEW_ERROR_MESSAGES: ErrorMessageOverrides = {
   VALIDATION_FAILED: 'The review request was rejected. Check the title and content and try again.',
@@ -74,8 +79,8 @@ const REVIEW_ERROR_MESSAGES: ErrorMessageOverrides = {
 
 /** A review that reached `failed` (or `cancelled`) on the server. */
 class ReviewFailedError extends Error {
-  constructor(readonly code: string) {
-    super(`Review failed: ${code}`);
+  constructor(readonly failure: ReviewFailure) {
+    super(`Review failed: ${failure.code}`);
   }
 }
 
@@ -148,11 +153,14 @@ export class ReviewStore {
   private readonly document = inject(DocumentService);
   private readonly config = inject(APP_CONFIG);
   private readonly errors = inject(ErrorHandlingService);
+  private readonly models = inject(ModelSelection);
   private readonly notifications = inject(NotificationService);
   private readonly destroyRef = inject(DestroyRef);
 
   private readonly _phase = signal<ReviewPhase>('idle');
   private readonly _error = signal<string | null>(null);
+  /** Structured outcome of a review that failed on the server (null for request errors). */
+  private readonly _failure = signal<ReviewFailure | null>(null);
   private readonly _validationError = signal<ReviewValidationError | null>(null);
   private readonly _review = signal<Review | null>(null);
   /**
@@ -179,6 +187,7 @@ export class ReviewStore {
 
   readonly phase = this._phase.asReadonly();
   readonly error = this._error.asReadonly();
+  readonly failure = this._failure.asReadonly();
   readonly validationError = this._validationError.asReadonly();
   readonly review = this._review.asReadonly();
   readonly acceptedChanges = this._accepted.asReadonly();
@@ -350,6 +359,7 @@ export class ReviewStore {
       title: this.document.title().trim() || 'Untitled document',
       content,
       categories: this.config.review.categories,
+      model: this.models.modelForRequest(),
     };
     this.flows$.next({
       flow: this.api.createReview(request).pipe(
@@ -371,6 +381,14 @@ export class ReviewStore {
     if (interrupted) {
       this.loadReview(interrupted);
     } else {
+      this.submit();
+    }
+  }
+
+  /** After a quota failure: switches to the next model with quota left and reviews again. */
+  tryAnotherModel(): void {
+    const failedModel = this._failure()?.quota?.model ?? null;
+    if (this.models.selectNextAvailable(failedModel)) {
       this.submit();
     }
   }
@@ -568,6 +586,7 @@ export class ReviewStore {
   private startLoading(trackingId: string | null): void {
     this._phase.set('loading');
     this._error.set(null);
+    this._failure.set(null);
     this._stage.set(null);
     this._detected.set(0);
     this._interruptedReviewId.set(null);
@@ -634,9 +653,15 @@ export class ReviewStore {
     this._trackingId.set(null);
     this._stage.set(null);
     if (review.status !== 'completed') {
-      this.fail(new ReviewFailedError(review.errorCode ?? 'PROCESSING_FAILED'));
+      this.fail(
+        new ReviewFailedError(
+          review.failure ?? { code: 'PROCESSING_FAILED', message: null, quota: null },
+        ),
+      );
       return;
     }
+    // A review finishing proves its model has quota again.
+    this.models.clearQuota(review.model ?? this.models.defaultModel() ?? '');
     if (options.restoreDocument) {
       this.document.setTitle(review.title);
       this.document.setContent(review.content);
@@ -659,6 +684,7 @@ export class ReviewStore {
     if (this._phase() === 'error') {
       this._phase.set(this._review() ? 'success' : 'idle');
       this._error.set(null);
+      this._failure.set(null);
     }
   }
 
@@ -666,13 +692,25 @@ export class ReviewStore {
     this._stage.set(null);
     this._trackingId.set(null);
     this._phase.set('error');
+    this._failure.set(null);
     if (error instanceof ReviewInterruptedError) {
       this._interruptedReviewId.set(error.reviewId);
       this._error.set(REVIEW_ERROR_MESSAGES[error.code] ?? null);
     } else if (error instanceof ReviewFailedError) {
+      const { failure } = error;
+      this._failure.set(failure);
       this._error.set(
-        REVIEW_ERROR_MESSAGES[error.code] ?? 'The review failed. Please run it again.',
+        failure.message ??
+          REVIEW_ERROR_MESSAGES[failure.code] ??
+          'The review failed. Please run it again.',
       );
+      const quota = failure.quota;
+      if (quota?.model) {
+        this.models.markQuotaReached(quota.model, quota.resetAtMs);
+      }
+    } else if (toApiError(error).fieldErrors?.['model'] !== undefined) {
+      this.models.handleRejected();
+      this._error.set(MODEL_REJECTED);
     } else {
       this._error.set(this.errors.userMessage(error, REVIEW_ERROR_MESSAGES));
     }

@@ -58,6 +58,36 @@ export interface Review {
   readonly findings: readonly Finding[];
   /** Set when `status === 'failed'`. */
   readonly errorCode: string | null;
+  /** Why the review failed (user-safe text from Node), when it did. */
+  readonly failure: ReviewFailure | null;
+  /** Model that produced the review; `null` means the service default was used. */
+  readonly model: string | null;
+}
+
+export type QuotaScope = 'daily' | 'minute' | 'unknown';
+
+/** Details Node attaches to `LLM_SERVICE_RATE_LIMITED`; every field may be missing. */
+export interface QuotaDetails {
+  readonly model: string | null;
+  readonly scope: QuotaScope;
+  /** When the quota resets, in epoch milliseconds (from `resetAt`, else now + `retryAfterSeconds`). */
+  readonly resetAtMs: number | null;
+}
+
+/** A failed review's outcome. `message` is user-safe and displayed as sent. */
+export interface ReviewFailure {
+  readonly code: string;
+  readonly message: string | null;
+  /** Present only for `LLM_SERVICE_RATE_LIMITED`. */
+  readonly quota: QuotaDetails | null;
+}
+
+export const QUOTA_ERROR_CODE = 'LLM_SERVICE_RATE_LIMITED';
+
+/** `GET /reviews/models`. `defaultModel` is always one of `models`. */
+export interface ReviewModels {
+  readonly defaultModel: string;
+  readonly models: readonly string[];
 }
 
 export interface ReviewSummary {
@@ -68,6 +98,7 @@ export interface ReviewSummary {
   /** 0 until the review completes. Node does not report per-status counts. */
   readonly findingCount: number;
   readonly errorCode: string | null;
+  readonly model: string | null;
 }
 
 export interface ReviewPage {
@@ -81,6 +112,8 @@ export interface CreateReviewRequest {
   readonly title: string;
   readonly content: string;
   readonly categories: readonly ReviewCategory[];
+  /** Omit to use the service default. */
+  readonly model?: string;
 }
 
 /** Result of `POST /reviews`: the review is queued, not analysed yet. */
@@ -129,9 +162,26 @@ export interface ReviewSummaryDto {
   readonly findingCount: number;
   readonly errorCode: string | null;
   readonly errorMessage: string | null;
+  /** Only for quota failures; every field inside may be missing. */
+  readonly errorDetails?: ReviewErrorDetailsDto | null;
+  /** `null` (or absent on older servers) = the default model was used. */
+  readonly model?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly completedAt: string | null;
+}
+
+export interface ReviewErrorDetailsDto {
+  readonly model?: string | null;
+  readonly quotaScope?: QuotaScope | null;
+  readonly retryAfterSeconds?: number | null;
+  /** ISO-8601 UTC. */
+  readonly resetAt?: string | null;
+}
+
+export interface ReviewModelsDto {
+  readonly defaultModel: string;
+  readonly models: readonly string[];
 }
 
 export interface ReviewDto extends ReviewSummaryDto {
@@ -145,6 +195,7 @@ export interface CreateReviewRequestDto {
   readonly documentTitle: string;
   readonly content: string;
   readonly categories: readonly ReviewCategory[];
+  readonly model?: string;
 }
 
 /** `202 Accepted` body of `POST /reviews`. */
@@ -198,6 +249,7 @@ export interface ReviewEventPayloads {
     status: 'failed';
     errorCode: string;
     errorMessage: string;
+    errorDetails?: ReviewErrorDetailsDto | null;
     occurredAt: string;
   };
 }

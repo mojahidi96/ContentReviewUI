@@ -6,8 +6,10 @@ import {
   faAnglesRight,
   faClockRotateLeft,
   faFileLines,
+  faNewspaper,
   faWandMagicSparkles,
 } from '@fortawesome/free-solid-svg-icons';
+import { ModelPicker } from '../../content-review/model-picker/model-picker';
 import { Spinner } from '../../../shared/components/spinner/spinner';
 
 interface NavItem {
@@ -25,7 +27,7 @@ interface NavItem {
  */
 @Component({
   selector: 'app-side-panel',
-  imports: [RouterLink, RouterLinkActive, FaIconComponent, Spinner],
+  imports: [RouterLink, RouterLinkActive, FaIconComponent, ModelPicker, Spinner],
   host: { class: 'flex h-full flex-col' },
   templateUrl: './side-panel.html',
   styleUrl: './side-panel.scss',
@@ -44,6 +46,13 @@ export class SidePanel {
 
   private readonly allNavItems: readonly NavItem[] = [
     { label: 'Document', link: '/workspace', icon: faFileLines, exact: true, authorOnly: false },
+    {
+      label: 'Documents',
+      link: '/workspace/documents',
+      icon: faNewspaper,
+      exact: false,
+      authorOnly: true,
+    },
     {
       label: 'Review history',
       link: '/workspace/history',
