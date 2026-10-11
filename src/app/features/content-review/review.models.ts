@@ -78,11 +78,14 @@ export interface QuotaDetails {
 export interface ReviewFailure {
   readonly code: string;
   readonly message: string | null;
+  /** The model that failed; `null` means the service default. */
+  readonly model: string | null;
   /** Present only for `LLM_SERVICE_RATE_LIMITED`. */
   readonly quota: QuotaDetails | null;
 }
 
 export const QUOTA_ERROR_CODE = 'LLM_SERVICE_RATE_LIMITED';
+export const TIMEOUT_ERROR_CODE = 'LLM_SERVICE_TIMEOUT';
 
 /** `GET /reviews/models`. `defaultModel` is always one of `models`. */
 export interface ReviewModels {
@@ -130,7 +133,9 @@ export type ReviewProgress =
   | { readonly kind: 'progress'; readonly stage: ProgressStage; readonly attempt: number }
   | { readonly kind: 'finding'; readonly findingId: string }
   | { readonly kind: 'completed'; readonly findingCount: number }
-  | { readonly kind: 'failed'; readonly errorCode: string };
+  | { readonly kind: 'failed'; readonly errorCode: string }
+  /** The event stream dropped (`connected: false`) or came back. The browser reconnects itself. */
+  | { readonly kind: 'connection'; readonly connected: boolean };
 
 // ================================================================ wire format (Node v1)
 

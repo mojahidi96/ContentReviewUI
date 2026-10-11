@@ -139,6 +139,14 @@ them? The UI is stricter today, which is safe but inconsistent for API clients.
 300 requests per 15 minutes per IP, which is shared by every user behind one NAT. Should
 `/events` be exempt or limited per user?
 
+<a id="q14"></a>**Q14. Emailed codes.** Can Node add 4-digit code sign-in and password reset
+(email delivery, hashed single-use codes, attempt limits)? Prompt:
+[backend-prompts/01-otp-login-and-password-reset.md](backend-prompts/01-otp-login-and-password-reset.md).
+
+<a id="q15"></a>**Q15. Refresh token.** The session cookie lasts 15 minutes and is never renewed, so
+active users are signed out. Can Node add a rotating refresh token that expires after 2 days of
+inactivity? Prompt: [backend-prompts/03-refresh-token.md](backend-prompts/03-refresh-token.md).
+
 <a id="q13"></a>**Q13. Document upload and chat.** Should Node expose `/documents` and `/chat` in
 front of Python's internal endpoints? If yes, please confirm the proposed shapes in
 [api-contract.md §10.4](api-contract.md#104-document-upload-and-rag-chat--q13), the upload size

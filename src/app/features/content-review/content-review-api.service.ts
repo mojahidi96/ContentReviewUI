@@ -1,7 +1,8 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext } from '@angular/common/http';
 import { Service, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
+import { REQUEST_TIMEOUT_MS } from '../../core/http/http-context';
 import {
   toCreatedReview,
   toReview,
@@ -30,7 +31,8 @@ import type {
 @Service()
 export class ContentReviewApiService {
   private readonly http = inject(HttpClient);
-  private readonly baseUrl = `${inject(APP_CONFIG).apiBaseUrl}/reviews`;
+  private readonly config = inject(APP_CONFIG);
+  private readonly baseUrl = `${this.config.apiBaseUrl}/reviews`;
 
   /** Queues a review (`202 Accepted`). Results arrive over {@link ReviewEventsService}. */
   createReview(request: CreateReviewRequest): Observable<CreatedReview> {
@@ -40,7 +42,9 @@ export class ContentReviewApiService {
       categories: request.categories,
       ...(request.model ? { model: request.model } : {}),
     };
-    return this.http.post<unknown>(this.baseUrl, body).pipe(map(toCreatedReview));
+    // Node answers 202 immediately, so a long wait means the request itself is stuck.
+    const context = new HttpContext().set(REQUEST_TIMEOUT_MS, this.config.review.createTimeoutMs);
+    return this.http.post<unknown>(this.baseUrl, body, { context }).pipe(map(toCreatedReview));
   }
 
   /** Models an author may pick for a review (`503` when the list is unavailable). */

@@ -26,7 +26,6 @@ import { normalizeTitle } from '../document.service';
     '(window:keydown)': 'onKeydown($event)',
   },
   templateUrl: './write.page.html',
-  styleUrl: './write.page.scss',
 })
 export class WritePage implements HasUnsavedChanges {
   private readonly api = inject(DocumentApiService);

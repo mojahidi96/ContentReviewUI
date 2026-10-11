@@ -84,7 +84,7 @@ describe('LoginPage', () => {
     flushCsrf(http);
     http.expectOne('/api/v1/auth/login').flush({ user: toUserDto(TEST_USER), csrfToken: 't' });
     await fixture.whenStable();
-    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace');
+    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/documents');
   });
 
   it.each([

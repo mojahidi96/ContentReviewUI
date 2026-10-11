@@ -22,7 +22,6 @@ export function modelLabel(id: string): string {
   imports: [FaIconComponent, Spinner],
   host: { class: 'block' },
   templateUrl: './model-picker.html',
-  styleUrl: './model-picker.scss',
 })
 export class ModelPicker {
   protected readonly models = inject(ModelSelection);

@@ -17,6 +17,7 @@ import { EmptyState } from '../../../shared/components/empty-state';
 import { Spinner } from '../../../shared/components/spinner/spinner';
 import { FindingCard } from '../finding-card/finding-card';
 import { ReviewFailureBanner } from '../review-failure/review-failure';
+import { ReviewProgressCard } from '../review-progress/review-progress';
 import { STATUS_META, categoryMeta } from '../finding-meta';
 import { FINDING_STATUSES, type FindingStatus } from '../review.models';
 import { ReviewStore } from '../review.store';
@@ -31,13 +32,13 @@ import { ReviewStore } from '../review.store';
     Spinner,
     FindingCard,
     ReviewFailureBanner,
+    ReviewProgressCard,
   ],
   host: {
     class:
       'flex flex-col rounded-xl border border-slate-200 bg-slate-100/60 dark:border-slate-800 dark:bg-slate-900/60',
   },
   templateUrl: './findings-panel.html',
-  styleUrl: './findings-panel.scss',
 })
 export class FindingsPanel {
   protected readonly store = inject(ReviewStore);

@@ -26,8 +26,14 @@ export const TEST_CONFIG: AppConfig = {
   production: false,
   apiBaseUrl: '/api/v1',
   requestTimeoutMs: 1_000,
-  review: { maxChars: 100, categories: ['grammar', 'spelling', 'profanity'], pageSize: 20 },
+  review: {
+    maxChars: 100,
+    categories: ['grammar', 'spelling', 'profanity'],
+    pageSize: 20,
+    createTimeoutMs: 1_000,
+  },
   reviewEvents: { maxReconnects: 2, reconnectDelayMs: 0 },
+  reviewWatchdog: { stillWorkingMs: 3_000, stalledMs: 15_000, pollMs: 500 },
   features: { guestLogin: true },
 };
 

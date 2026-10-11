@@ -12,11 +12,31 @@ import {
   reviewBody,
 } from '../../testing/test-providers';
 import { DocumentService } from '../workspace/document.service';
+import type { SavedDocument } from '../workspace/document.models';
 import { ModelSelection } from './model-selection';
 import type { Finding, ReviewErrorDetailsDto, ReviewStatus } from './review.models';
 import { ReviewStore } from './review.store';
 
 const AT = '2026-10-01T10:00:00.000Z';
+const DOC_ID = '6720f1c2a4b5c6d7e8f9aaaa';
+const documentBody = (content: string, version = 1, title = 'Doc') => ({
+  document: {
+    documentId: DOC_ID,
+    title,
+    content,
+    contentLength: Array.from(content).length,
+    version,
+    createdAt: AT,
+    updatedAt: AT,
+  },
+});
+const documentFromBody = (content: string): SavedDocument => ({
+  id: DOC_ID,
+  title: 'Doc',
+  content,
+  version: 1,
+  updatedAt: AT,
+});
 const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('ReviewStore', () => {
@@ -85,6 +105,7 @@ describe('ReviewStore', () => {
   };
 
   beforeEach(() => {
+    localStorage.clear(); // the remembered model must not leak between tests
     TestBed.configureTestingModule({
       providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
@@ -199,7 +220,7 @@ describe('ReviewStore', () => {
       store.submit();
       const first = accept202();
       doc.setContent('second version teh');
-      store.submit();
+      store.cancelAndRetry();
       expect(first.closed).toBe(true);
 
       const second = accept202(expectCreate(), 'aaaaaaaaaaaaaaaaaaaaaaaa');
@@ -218,6 +239,159 @@ describe('ReviewStore', () => {
         'aaaaaaaaaaaaaaaaaaaaaaaa',
       );
       expect(store.findings().map((f) => f.id)).toEqual(['fnd_second']);
+    });
+  });
+
+  describe('watchdog', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    const run = () => {
+      store.submit();
+      return accept202();
+    };
+    const getReviewRequests = () => http.match({ method: 'GET', url: reviewUrl() });
+
+    it('ignores a second submit while a review is being created or run', () => {
+      store.submit();
+      store.submit();
+      expectCreate(); // exactly one POST, or this throws
+      store.submit();
+    });
+
+    it('counts elapsed time and shows a reassurance after the first threshold', () => {
+      const source = run();
+      source.emit('review.progress', 1, {
+        reviewId: REVIEW_ID,
+        stage: 'validating',
+        attempt: 1,
+        occurredAt: AT,
+      });
+      expect(store.progressLabel()).toBe('Validating findings…');
+      vi.advanceTimersByTime(2_000);
+      expect(store.elapsedMs()).toBe(2_000);
+      expect(store.stillWorking()).toBe(false);
+      vi.advanceTimersByTime(1_000);
+      expect(store.stillWorking()).toBe(true);
+      expect(store.stalled()).toBe(false);
+    });
+
+    it('stops the spinner when stalled, and re-fetches once automatically', () => {
+      run();
+      vi.advanceTimersByTime(14_000);
+      expect(getReviewRequests()).toHaveLength(0);
+      vi.advanceTimersByTime(1_000);
+      expect(store.stalled()).toBe(true);
+      const auto = getReviewRequests();
+      expect(auto).toHaveLength(1);
+      auto[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      expect(store.phase()).toBe('loading');
+      vi.advanceTimersByTime(10_000);
+      expect(getReviewRequests()).toHaveLength(0); // only once
+    });
+
+    it('shows a review that finished while its stream event was missed', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+      expect(store.findings().map((f) => f.id)).toEqual(['fnd_spell']);
+      vi.advanceTimersByTime(60_000);
+      expect(store.elapsedMs()).toBeLessThanOrEqual(15_000); // watchdog stopped
+    });
+
+    it('Check status re-fetches and reports that the review is still running', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.checkStatus();
+      expect(store.statusCheck()).toBe('checking');
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      expect(store.statusCheck()).toBe('running');
+      expect(store.phase()).toBe('loading');
+    });
+
+    it('Check status shows the result when the review has finished', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.checkStatus();
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+    });
+
+    it('Cancel and retry stops following the old review and submits again', () => {
+      const first = run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.cancelAndRetry();
+      expect(first.closed).toBe(true);
+      expect(store.stalled()).toBe(false);
+      http.expectOne({ method: 'POST', url: '/api/v1/reviews' });
+    });
+
+    it('polls while the stream is down and stops once the review is completed', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+      expect(source.closed).toBe(true);
+      vi.advanceTimersByTime(5_000);
+      expect(getReviewRequests()).toHaveLength(0);
+    });
+
+    it('stops polling when the stream reconnects', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      source.open();
+      vi.advanceTimersByTime(2_000);
+      expect(getReviewRequests()).toHaveLength(0);
+      expect(store.phase()).toBe('loading');
+    });
+
+    it('keeps polling after a failed poll request', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(null, { status: 500, statusText: 'Server Error' });
+      expect(store.phase()).toBe('loading');
+      vi.advanceTimersByTime(500);
+      expect(getReviewRequests()).toHaveLength(1);
+    });
+
+    it('gives up on a stuck POST /reviews after the create timeout', () => {
+      store.submit();
+      const req = expectCreate();
+      vi.advanceTimersByTime(1_000);
+      expect(req.cancelled).toBe(true);
+      expect(store.phase()).toBe('error');
+      expect(store.error()).toMatch(/took longer than expected/i);
+    });
+
+    it('offers Retry and another model after an LLM_SERVICE_TIMEOUT failure', () => {
+      const models = TestBed.inject(ModelSelection);
+      models.load();
+      http.expectOne('/api/v1/reviews/models').flush({
+        defaultModel: 'gemini-3.6-flash',
+        models: ['gemini-3.6-flash', 'gemini-3.8-flash'],
+      });
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_TIMEOUT',
+          errorMessage: 'The model took too long to answer.',
+        }),
+      );
+      expect(store.error()).toBe('The model took too long to answer.');
+      expect(store.failure()?.quota).toBeNull();
+      store.tryAnotherModel();
+      expect(expectCreate().request.body.model).toBe('gemini-3.8-flash');
     });
   });
 
@@ -678,7 +852,52 @@ describe('ReviewStore', () => {
       expect(doc.content()).toBe('the the cat sits');
       expect(store.isStale()).toBe(false);
       expect(store.undo('fnd_spell')).toBe(false);
-      expect(notify).toHaveBeenCalledWith('2 changes saved.');
+
+      // The edited text is saved as the document too, like the editor's Save button.
+      const save = http.expectOne({ method: 'POST', url: '/api/v1/documents' });
+      expect(save.request.body.content).toBe('the the cat sits');
+      expect(doc.activity()).toBe('saving');
+      save.flush(documentBody('the the cat sits', 1, doc.title()), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expect(doc.origin()).toBe('saved');
+      expect(notify).toHaveBeenCalledWith('2 changes saved and document saved.');
+    });
+
+    it('updates an already saved document instead of creating another', () => {
+      doc.adopt(documentFromBody('the teh cat sat'));
+      store.restoreReviewedContent(); // the accepted edits are unsaved changes to that document
+      store.saveChanges();
+      for (const finding of [spelling, later]) {
+        http
+          .expectOne({ method: 'PATCH', url: `${reviewUrl()}/findings/${finding.id}` })
+          .flush({ finding: findingToDto({ ...finding, status: 'accepted' }) });
+      }
+      const put = http.expectOne({ method: 'PUT', url: `/api/v1/documents/${DOC_ID}` });
+      expect(put.request.body).toMatchObject({ content: 'the the cat sits', version: 1 });
+      put.flush(documentBody('the the cat sits', 2, 'Doc'));
+      expect(doc.origin()).toBe('saved');
+    });
+
+    it('does not claim the document was saved when saving it fails', () => {
+      const notify = vi.spyOn(TestBed.inject(NotificationService), 'success');
+      doc.adopt(documentFromBody('the teh cat sat'));
+      store.restoreReviewedContent(); // the accepted edits are unsaved changes to that document
+      store.saveChanges();
+      for (const finding of [spelling, later]) {
+        http
+          .expectOne({ method: 'PATCH', url: `${reviewUrl()}/findings/${finding.id}` })
+          .flush({ finding: findingToDto({ ...finding, status: 'accepted' }) });
+      }
+      http
+        .expectOne({ method: 'PUT', url: `/api/v1/documents/${DOC_ID}` })
+        .flush(
+          { error: { code: 'DOCUMENT_VERSION_CONFLICT', message: 'x' } },
+          { status: 409, statusText: 'Conflict' },
+        );
+      expect(doc.hasConflict()).toBe(true);
+      expect(notify).not.toHaveBeenCalledWith('2 changes saved and document saved.');
     });
 
     it('keeps the changes unsaved and notifies when saving fails', () => {

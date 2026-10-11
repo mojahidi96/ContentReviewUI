@@ -12,7 +12,6 @@ import {
   imports: [FaIconComponent],
   host: { class: 'flex min-h-dvh bg-white dark:bg-slate-950' },
   templateUrl: './auth-layout.html',
-  styleUrl: './auth-layout.scss',
 })
 export class AuthLayout {
   readonly heading = input.required<string>();

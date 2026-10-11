@@ -73,7 +73,7 @@ export function toReview(body: unknown): Review {
   const summary = summaryFields(dto, 'review');
   return {
     ...summary,
-    failure: toFailure(summary.errorCode, dto['errorMessage'], dto['errorDetails']),
+    failure: toFailure(summary.errorCode, dto['errorMessage'], dto['errorDetails'], summary.model),
     categories: field(dto, 'categories', isStringArray, 'review.categories'),
     content,
     contentLength: field(dto, 'contentLength', isCount, 'review.contentLength'),
@@ -89,11 +89,12 @@ export function toFailure(
   code: string | null,
   message: unknown,
   details: unknown,
+  model: string | null = null,
   now = Date.now(),
 ): ReviewFailure | null {
   if (code === null) return null;
   const text = typeof message === 'string' && message.trim() ? message : null;
-  if (code !== QUOTA_ERROR_CODE) return { code, message: text, quota: null };
+  if (code !== QUOTA_ERROR_CODE) return { code, message: text, model, quota: null };
   const d = isRecord(details) ? details : {};
   const resetAt = typeof d['resetAt'] === 'string' ? Date.parse(d['resetAt']) : NaN;
   const retryAfter = d['retryAfterSeconds'];
@@ -101,6 +102,7 @@ export function toFailure(
   return {
     code,
     message: text,
+    model,
     quota: {
       model: typeof d['model'] === 'string' && d['model'] ? d['model'] : null,
       scope: scope === 'daily' || scope === 'minute' ? (scope as QuotaScope) : 'unknown',

@@ -40,7 +40,6 @@ function readCollapsedPreference(): boolean {
     '(document:keydown.escape)': 'closeDrawer()',
   },
   templateUrl: './workspace-shell.html',
-  styleUrl: './workspace-shell.scss',
 })
 export class WorkspaceShell {
   protected readonly auth = inject(AuthService);

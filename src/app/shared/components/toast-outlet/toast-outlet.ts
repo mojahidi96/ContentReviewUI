@@ -44,7 +44,6 @@ const STYLES: Record<
       'pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col items-end gap-2 sm:inset-x-auto sm:right-4',
   },
   templateUrl: './toast-outlet.html',
-  styleUrl: './toast-outlet.scss',
 })
 export class ToastOutlet {
   protected readonly notifications = inject(NotificationService);

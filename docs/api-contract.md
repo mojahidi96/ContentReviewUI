@@ -39,6 +39,7 @@ The UI keeps its own domain types and converts in one place
 | POST | `/auth/login` | – | ✓ | ✅ | Login page |
 | POST | `/auth/logout` | ✓ | ✓ | ✅ | Sign out |
 | GET | `/auth/me` | ✓ | – | ✅ | Session restore at startup |
+| POST | `/auth/refresh` | refresh cookie | ✓ | 🟡 proposed | Silent session renewal on `401`, and at startup |
 | POST | `/auth/otp/request` | – | ✓ | 🟡 proposed | "Email me a code" (login) |
 | POST | `/auth/otp/login` | – | ✓ | 🟡 proposed | Sign in with the 4-digit code |
 | POST | `/auth/password/forgot` | – | ✓ | 🟡 proposed | Forgot password: email the code |
@@ -302,6 +303,21 @@ interface User {
   guest?: true;
 }
 ```
+
+### Refresh token 🟡 proposed (mock implements it; Node does not yet)
+
+Backend prompt: [backend-prompts/03-refresh-token.md](backend-prompts/03-refresh-token.md).
+
+- Login, register, OTP login and password reset also set an HttpOnly `content_review_refresh`
+  cookie (`Path=/api/v1/auth`, opaque, rotated on every use). The session cookie stays short-lived (15 min).
+- `POST /auth/refresh` (CSRF, no session needed; the UI fetches an anonymous token with
+  `GET /auth/csrf` first) → `200 { user, csrfToken }` + new session cookie + new refresh cookie.
+  `401 REFRESH_INVALID` when missing, expired, revoked or reused.
+- The refresh token lives **2 days since last use** (sliding: each refresh issues a new token with
+  a new 2-day expiry) with an optional 30-day absolute cap.
+- UI behaviour: a protected `401` triggers one refresh and a repeat of the request (concurrent
+  failures share one refresh); only a refused refresh shows "session expired". At startup a
+  failed `/auth/me` is followed by a refresh, so returning within 2 days needs no sign-in.
 
 ### Review models and quota failures
 

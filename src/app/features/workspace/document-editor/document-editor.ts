@@ -38,7 +38,6 @@ import { DocumentService } from '../document.service';
     '(window:beforeunload)': 'onBeforeUnload($event)',
   },
   templateUrl: './document-editor.html',
-  styleUrl: './document-editor.scss',
 })
 export class DocumentEditor {
   protected readonly document = inject(DocumentService);

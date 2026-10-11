@@ -25,7 +25,6 @@ import { Spinner } from '../../../shared/components/spinner/spinner';
       'flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:px-6 dark:border-slate-800 dark:bg-slate-900',
   },
   templateUrl: './workspace-header.html',
-  styleUrl: './workspace-header.scss',
 })
 export class WorkspaceHeader {
   readonly user = input<User | null>(null);

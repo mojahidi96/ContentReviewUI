@@ -103,7 +103,7 @@ describe.each(['login', 'reset'] as const)('OtpPage (%s)', (mode) => {
     );
     req.flush({ user: toUserDto(TEST_USER), csrfToken: 't' });
     await fixture.whenStable();
-    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace');
+    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/documents');
   });
 
   if (mode === 'reset') {

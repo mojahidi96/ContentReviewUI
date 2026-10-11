@@ -38,7 +38,6 @@ const STATUS_BADGE: Record<ReviewStatus, { label: string; tone: BadgeTone }> = {
   imports: [DatePipe, FaIconComponent, Badge, ButtonDirective, EmptyState, Spinner],
   host: { class: 'block' },
   templateUrl: './review-history.page.html',
-  styleUrl: './review-history.page.scss',
 })
 export class ReviewHistoryPage {
   private readonly api = inject(ContentReviewApiService);

@@ -54,6 +54,7 @@ export class ReviewEventsService {
     return new Observable<ReviewProgress>((subscriber) => {
       let lastEventId = afterEventId;
       let consecutiveErrors = 0;
+      let down = false;
       const source = this.createEventSource(this.api.eventsUrl(reviewId, afterEventId), {
         withCredentials: true,
       });
@@ -83,9 +84,19 @@ export class ReviewEventsService {
       for (const type of REVIEW_EVENT_TYPES) {
         source.addEventListener(type, (event) => handle(type, event));
       }
-      source.onopen = () => (consecutiveErrors = 0);
+      source.onopen = () => {
+        consecutiveErrors = 0;
+        if (down) {
+          down = false;
+          subscriber.next({ kind: 'connection', connected: true });
+        }
+      };
       source.onerror = () => {
         consecutiveErrors++;
+        if (!down) {
+          down = true;
+          subscriber.next({ kind: 'connection', connected: false });
+        }
         // CONNECTING means the browser is retrying with Last-Event-ID; let it, within reason.
         if (source.readyState === CLOSED || consecutiveErrors > this.maxErrors) {
           source.close();

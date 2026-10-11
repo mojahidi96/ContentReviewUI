@@ -11,7 +11,6 @@ import { faCircleExclamation } from '@fortawesome/free-solid-svg-icons';
   imports: [FaIconComponent],
   host: { class: 'block' },
   templateUrl: './form-field.html',
-  styleUrl: './form-field.scss',
 })
 export class FormField {
   readonly label = input.required<string>();

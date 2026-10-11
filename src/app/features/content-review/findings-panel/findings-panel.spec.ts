@@ -10,6 +10,7 @@ import {
   provideTestHttp,
   reviewBody,
 } from '../../../testing/test-providers';
+import { NotificationService } from '../../../core/notifications/notification.service';
 import { DocumentService } from '../../workspace/document.service';
 import { FindingsPanel } from './findings-panel';
 import { ModelSelection } from '../model-selection';
@@ -131,6 +132,7 @@ describe('FindingsPanel', () => {
 
     button('Save Changes')!.click();
     await fixture.whenStable();
+    expect(el.querySelector('dialog[open]')?.textContent).toContain('document is saved with them');
     expect(el.querySelector('dialog[open]')?.textContent).toContain('can’t be undone');
     http.expectNone(() => true);
 
@@ -145,6 +147,29 @@ describe('FindingsPanel', () => {
     expect(patch.request.body).toEqual({ status: 'accepted' });
     patch.flush({ finding: findingToDto(makeFinding({ status: 'accepted' })) });
     await fixture.whenStable();
+    // Saving the changes saves the document as well, and confirms it with a toast.
+    const save = http.expectOne({ method: 'POST', url: '/api/v1/documents' });
+    expect(save.request.body.content).toBe('the the cat');
+    save.flush(
+      {
+        document: {
+          documentId: '6720f1c2a4b5c6d7e8f9aaaa',
+          title: doc.title(),
+          content: 'the the cat',
+          contentLength: 11,
+          version: 1,
+          createdAt: '2026-10-01T10:00:00.000Z',
+          updatedAt: '2026-10-01T10:00:00.000Z',
+        },
+      },
+      { status: 201, statusText: 'Created' },
+    );
+    await fixture.whenStable();
+    expect(
+      TestBed.inject(NotificationService)
+        .notifications()
+        .map((n) => n.message),
+    ).toContain('1 change saved and document saved.');
     expect(el.textContent).toContain('Resolved');
     expect(button('Undo')).toBeUndefined();
     expect(button('Save Changes')!.disabled).toBe(true);

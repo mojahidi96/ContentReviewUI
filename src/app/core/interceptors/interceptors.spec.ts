@@ -1,8 +1,15 @@
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { TEST_USER, flushCsrf, provideTestHttp, signIn } from '../../testing/test-providers';
+import {
+  TEST_USER,
+  flushCsrf,
+  provideTestHttp,
+  signIn,
+  toUserDto,
+} from '../../testing/test-providers';
 import { AuthService } from '../auth/auth.service';
 import { REQUEST_TIMEOUT_MS, SKIP_SESSION_EXPIRY } from '../http/http-context';
 
@@ -16,6 +23,7 @@ describe('HTTP interceptors', () => {
     client = TestBed.inject(HttpClient);
     http = TestBed.inject(HttpTestingController);
     auth = TestBed.inject(AuthService);
+    vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -30,11 +38,79 @@ describe('HTTP interceptors', () => {
     expect(http.expectOne('https://cdn.example.com/file.json').request.withCredentials).toBe(false);
   });
 
-  it('expires the session on a 401 from a protected endpoint', () => {
-    const expired = vi.spyOn(auth, 'handleSessionExpired');
-    client.get('/api/v1/reviews').subscribe({ error: () => undefined });
-    http.expectOne('/api/v1/reviews').flush(null, { status: 401, statusText: 'Unauthorized' });
-    expect(expired).toHaveBeenCalledOnce();
+  describe('session refresh', () => {
+    const unauthorized = { status: 401, statusText: 'Unauthorized' };
+
+    it('expires the session when a 401 cannot be refreshed', async () => {
+      signIn(TEST_USER);
+      const expired = vi.spyOn(auth, 'handleSessionExpired');
+      const result = firstValueFrom(client.get('/api/v1/reviews'));
+      http.expectOne('/api/v1/reviews').flush(null, unauthorized);
+      flushCsrf(http);
+      http
+        .expectOne('/api/v1/auth/refresh')
+        .flush({ error: { code: 'REFRESH_INVALID', message: 'x' } }, unauthorized);
+      await expect(result).rejects.toMatchObject({ status: 401 });
+      expect(expired).toHaveBeenCalledOnce();
+    });
+
+    it('quietly refreshes the session and repeats the request after a 401', async () => {
+      signIn(TEST_USER);
+      const expired = vi.spyOn(auth, 'handleSessionExpired');
+      const result = firstValueFrom(client.get('/api/v1/reviews'));
+      http.expectOne('/api/v1/reviews').flush(null, unauthorized);
+      flushCsrf(http);
+      http
+        .expectOne('/api/v1/auth/refresh')
+        .flush({ user: toUserDto(TEST_USER), csrfToken: 'fresh' });
+      http.expectOne('/api/v1/reviews').flush({ items: [] });
+      expect(await result).toEqual({ items: [] });
+      expect(expired).not.toHaveBeenCalled();
+      expect(auth.isAuthenticated()).toBe(true);
+    });
+
+    it('sends the repeated write with the new CSRF token', async () => {
+      signIn(TEST_USER);
+      const result = firstValueFrom(client.post('/api/v1/reviews', {}));
+      http.expectOne('/api/v1/reviews').flush(null, unauthorized);
+      flushCsrf(http);
+      http
+        .expectOne('/api/v1/auth/refresh')
+        .flush({ user: toUserDto(TEST_USER), csrfToken: 'new' });
+      const repeat = http.expectOne('/api/v1/reviews');
+      expect(repeat.request.headers.get('X-CSRF-Token')).toBe('new');
+      repeat.flush({ ok: true });
+      expect(await result).toEqual({ ok: true });
+    });
+
+    it('refreshes once for several requests that fail together', async () => {
+      signIn(TEST_USER);
+      const a = firstValueFrom(client.get('/api/v1/a'));
+      const b = firstValueFrom(client.get('/api/v1/b'));
+      http.expectOne('/api/v1/a').flush(null, unauthorized);
+      http.expectOne('/api/v1/b').flush(null, unauthorized);
+      flushCsrf(http);
+      http
+        .expectOne('/api/v1/auth/refresh')
+        .flush({ user: toUserDto(TEST_USER), csrfToken: 'fresh' });
+      http.expectOne('/api/v1/a').flush('a');
+      http.expectOne('/api/v1/b').flush('b');
+      expect(await Promise.all([a, b])).toEqual(['a', 'b']);
+    });
+
+    it('expires the session when the repeated request is still unauthorized', async () => {
+      signIn(TEST_USER);
+      const expired = vi.spyOn(auth, 'handleSessionExpired');
+      const result = firstValueFrom(client.get('/api/v1/reviews'));
+      http.expectOne('/api/v1/reviews').flush(null, unauthorized);
+      flushCsrf(http);
+      http
+        .expectOne('/api/v1/auth/refresh')
+        .flush({ user: toUserDto(TEST_USER), csrfToken: 'fresh' });
+      http.expectOne('/api/v1/reviews').flush(null, unauthorized);
+      await expect(result).rejects.toMatchObject({ status: 401 });
+      expect(expired).toHaveBeenCalledOnce();
+    });
   });
 
   it('does not expire the session for requests that expect 401', () => {

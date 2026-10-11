@@ -47,7 +47,6 @@ const REGISTER_ERRORS = {
     Spinner,
   ],
   templateUrl: './register.page.html',
-  styleUrl: './register.page.scss',
 })
 export class RegisterPage {
   private readonly auth = inject(AuthService);
@@ -117,7 +116,7 @@ export class RegisterPage {
         this.pending.set(false);
         if (error === null) {
           this.notifications.success('Your account is ready. Welcome to ContentReview!');
-          void this.router.navigateByUrl('/workspace');
+          void this.router.navigateByUrl(this.auth.landingUrl());
         } else {
           this.handleError(error);
         }

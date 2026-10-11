@@ -40,7 +40,6 @@ const LOGIN_ERRORS = {
     Spinner,
   ],
   templateUrl: './login.page.html',
-  styleUrl: './login.page.scss',
 })
 export class LoginPage {
   private readonly auth = inject(AuthService);
@@ -95,7 +94,7 @@ export class LoginPage {
       .subscribe((error) => {
         this.pendingAction.set(null);
         if (error === null) {
-          void this.router.navigateByUrl(safeReturnUrl(this.returnUrl()));
+          void this.router.navigateByUrl(safeReturnUrl(this.returnUrl(), this.auth.landingUrl()));
         } else {
           this.serverError.set(error);
           this.form.controls.password.reset();

@@ -32,7 +32,6 @@ type Status = 'loading' | 'ready' | 'error';
   imports: [DatePipe, RouterLink, FaIconComponent, ButtonDirective, EmptyState, Spinner],
   host: { class: 'block' },
   templateUrl: './documents.page.html',
-  styleUrl: './documents.page.scss',
 })
 export class DocumentsPage {
   private readonly api = inject(DocumentApiService);

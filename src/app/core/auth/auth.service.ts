@@ -1,7 +1,7 @@
 import { HttpClient, HttpContext } from '@angular/common/http';
 import { Service, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
-import { Observable, catchError, finalize, map, of, tap } from 'rxjs';
+import { Observable, catchError, finalize, map, of, shareReplay, tap } from 'rxjs';
 import { APP_CONFIG } from '../config/app-config';
 import { toApiError } from '../http/api-error';
 import { SKIP_SESSION_EXPIRY } from '../http/http-context';
@@ -34,6 +34,8 @@ export class AuthService {
   private readonly csrf = inject(CsrfService);
   private readonly baseUrl = `${inject(APP_CONFIG).apiBaseUrl}/auth`;
 
+  private refreshing: Observable<User> | null = null;
+
   private readonly _user = signal<User | null>(null);
   private readonly _status = signal<AuthStatus>('unknown');
 
@@ -45,16 +47,41 @@ export class AuthService {
    * role is read-only. A UX gate only — the backend enforces this on every write.
    */
   readonly canEdit = computed(() => this._user()?.role === 'author');
+  /** Where to go after signing in: authors start at Home (their documents), readers at the shared text. */
+  readonly landingUrl = computed(() => (this.canEdit() ? '/workspace/documents' : '/workspace'));
 
-  /** Restores the session from the cookie on startup. Never errors: failure means anonymous. */
+  /**
+   * Restores the session on startup. The short-lived session cookie may have expired while the
+   * long-lived refresh cookie is still good (e.g. the user returns the next day), so a failed
+   * `/auth/me` falls back to one refresh. Never errors: failure means anonymous.
+   */
   restoreSession(): Observable<User | null> {
     return this.http
       .get<MeResponseDto>(`${this.baseUrl}/me`, { context: this.expectedAuthFailure() })
       .pipe(
         map(({ user }) => toUser(user)),
-        catchError(() => of(null)),
+        catchError(() => this.refreshSession().pipe(catchError(() => of(null)))),
         tap((user) => this.setUser(user)),
       );
+  }
+
+  /**
+   * Trades the HttpOnly refresh cookie for a new session. **Not in the verified Node contract**
+   * (🟡 proposed: `POST /auth/refresh`, see `docs/backend-prompts/03-refresh-token.md`).
+   * Concurrent callers share one request, so a burst of 401s refreshes once.
+   */
+  refreshSession(): Observable<User> {
+    if (!this.refreshing) {
+      this.refreshing = this.startSession(
+        this.http.post<SessionResponseDto>(`${this.baseUrl}/refresh`, null, {
+          context: this.expectedAuthFailure(),
+        }),
+      ).pipe(
+        finalize(() => (this.refreshing = null)),
+        shareReplay({ bufferSize: 1, refCount: false }),
+      );
+    }
+    return this.refreshing;
   }
 
   login(request: LoginRequest): Observable<User> {

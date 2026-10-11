@@ -1,7 +1,7 @@
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
 import { AuthService } from '../../core/auth/auth.service';
 import { ContentReviewApiService } from './content-review-api.service';
-import type { ReviewModels } from './review.models';
+import type { ReviewFailure, ReviewModels } from './review.models';
 
 export type ModelListStatus = 'idle' | 'loading' | 'ready' | 'unavailable';
 
@@ -10,6 +10,11 @@ export interface ModelOption {
   readonly isDefault: boolean;
   /** The model's quota ran out; it cannot be chosen until it resets. */
   readonly quotaReached: boolean;
+}
+
+/** The model a failed review ran on: the one named by the quota error, else its own, else the default. */
+export function failedModelOf(failure: ReviewFailure, defaultModel: string | null): string | null {
+  return failure.quota?.model ?? failure.model ?? defaultModel;
 }
 
 /** Longest delay `setTimeout` accepts. */

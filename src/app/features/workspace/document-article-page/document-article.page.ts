@@ -34,7 +34,6 @@ type Intent = 'review' | 'edit';
   imports: [DatePipe, RouterLink, FaIconComponent, ButtonDirective, ConfirmDialog, Spinner],
   host: { class: 'block' },
   templateUrl: './document-article.page.html',
-  styleUrl: './document-article.page.scss',
 })
 export class DocumentArticlePage {
   private readonly api = inject(DocumentApiService);

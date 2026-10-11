@@ -18,12 +18,23 @@ export interface AppConfig {
     readonly categories: readonly ReviewCategory[];
     /** Page size for review history (Node allows 1–50). */
     readonly pageSize: number;
+    /** `POST /reviews` answers `202` at once, so a slow answer means the request is stuck. */
+    readonly createTimeoutMs: number;
   };
   readonly reviewEvents: {
     /** Times the UI re-opens a dropped event stream before reporting the review as interrupted. */
     readonly maxReconnects: number;
     /** Delay before re-opening a stream that the browser gave up on. */
     readonly reconnectDelayMs: number;
+  };
+  /** Keeps the progress view honest when a review takes long or its stream goes quiet. */
+  readonly reviewWatchdog: {
+    /** After this long without a terminal event, say the review is still working. */
+    readonly stillWorkingMs: number;
+    /** After this long, stop the spinner and offer Check status / Cancel and retry. */
+    readonly stalledMs: number;
+    /** Interval for polling `GET /reviews/:id` while the event stream is down. */
+    readonly pollMs: number;
   };
   readonly features: {
     /**

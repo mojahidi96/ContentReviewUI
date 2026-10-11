@@ -49,8 +49,13 @@ describe('route guards', () => {
       expect(run(guestGuard)).toBe(true);
     });
 
-    it('sends authenticated users to the workspace', () => {
+    it('sends authenticated authors to Home', () => {
       signIn();
+      expect(serialize(run(guestGuard))).toBe('/workspace/documents');
+    });
+
+    it('sends authenticated readers to the shared document', () => {
+      signIn(TEST_READER);
       expect(serialize(run(guestGuard))).toBe('/workspace');
     });
   });

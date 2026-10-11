@@ -19,7 +19,6 @@ import { ReadOnlyDocument } from '../read-only-document/read-only-document';
   imports: [DocumentEditor, FindingsPanel, ReadOnlyDocument],
   host: { class: 'block' },
   templateUrl: './document.page.html',
-  styleUrl: './document.page.scss',
 })
 export class DocumentPage implements OnInit {
   protected readonly auth = inject(AuthService);

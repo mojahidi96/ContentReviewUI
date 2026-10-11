@@ -64,7 +64,6 @@ type Step = 'email' | 'code';
     Spinner,
   ],
   templateUrl: './otp.page.html',
-  styleUrl: './otp.page.scss',
 })
 export class OtpPage {
   private readonly auth = inject(AuthService);
@@ -182,7 +181,7 @@ export class OtpPage {
             this.notifications.success('Your password was updated and you are signed in.');
           }
           void this.router.navigateByUrl(
-            safeReturnUrl(this.route.snapshot.queryParams['returnUrl']),
+            safeReturnUrl(this.route.snapshot.queryParams['returnUrl'], this.auth.landingUrl()),
           );
         } else {
           this.serverError.set(error);

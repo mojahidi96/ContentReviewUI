@@ -87,7 +87,7 @@ describe('RegisterPage', () => {
       { status: 201, statusText: 'Created' },
     );
     await fixture.whenStable();
-    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace');
+    expect(router.navigateByUrl).toHaveBeenCalledWith('/workspace/documents');
   });
 
   it('flags a duplicate email on the email field', async () => {

@@ -9,6 +9,7 @@
  *   - POST /auth/guest              temporary guest author
  *   - User.role ("reader")          the seeded read-only account
  *   - User.guest
+ *   - POST /auth/refresh            sliding refresh cookie (idle 2 days), rotated on every use
  *   - POST /auth/otp/request, /auth/otp/login, /auth/password/forgot, /auth/password/reset
  *                                   4-digit email codes; the mock prints them to this console
  *
@@ -22,6 +23,8 @@
  *                              them fail with LLM_SERVICE_RATE_LIMITED (default none)
  *   MOCK_REVIEW_FAILURE_RATE   0..1 probability that a review ends in review.failed (default 0)
  *   MOCK_SESSION_TTL_MS        session lifetime (default 15 minutes, like AUTH_TOKEN_TTL)
+ *   MOCK_REFRESH_IDLE_TTL_MS   refresh cookie lifetime, renewed on every use (default 2 days)
+ *   MOCK_REFRESH_MAX_AGE_MS    hard cap on a refresh chain (default 30 days)
  *   COOKIE_SECURE              "true" to mark cookies Secure (default false, like Node in dev)
  */
 import cookieParser from 'cookie-parser';
@@ -42,9 +45,15 @@ const LATENCY_MS = Number(process.env.MOCK_LATENCY_MS ?? 300);
 const REVIEW_LATENCY_MS = Number(process.env.MOCK_REVIEW_LATENCY_MS ?? 1200);
 const FAILURE_RATE = Number(process.env.MOCK_REVIEW_FAILURE_RATE ?? 0);
 const SESSION_TTL_MS = Number(process.env.MOCK_SESSION_TTL_MS ?? 15 * 60 * 1000);
+const REFRESH_IDLE_TTL_MS = Number(process.env.MOCK_REFRESH_IDLE_TTL_MS ?? 2 * 24 * 60 * 60 * 1000);
+const REFRESH_MAX_AGE_MS = Number(process.env.MOCK_REFRESH_MAX_AGE_MS ?? 30 * 24 * 60 * 60 * 1000);
+/** A rotated token presented again within this window (two tabs racing) is not treated as theft. */
+const REFRESH_REUSE_GRACE_MS = 10_000;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 const MAX_CONTENT_CODE_POINTS = 50_000;
 const SESSION_COOKIE = 'content_review_session';
+const REFRESH_COOKIE = 'content_review_refresh';
+const REFRESH_COOKIE_PATH = '/api/v1/auth';
 const ANON_COOKIE = `${SESSION_COOKIE}_anon`;
 const CSRF_HEADER = 'x-csrf-token';
 const CATEGORIES = ['grammar', 'spelling', 'profanity'];
@@ -85,6 +94,10 @@ const reviewEvents = new Map();
 const listeners = new Map();
 /** Saved author documents, keyed by documentId. Content is stored exactly as sent. */
 const documents = new Map();
+/** Live refresh tokens (mock-only), keyed by the SHA-256 of the token. */
+const refreshTokens = new Map();
+/** Rotated tokens, kept to spot a stolen token being replayed. */
+const usedRefreshTokens = new Map();
 /** One-time codes (mock-only), keyed by `<purpose>:<email>`. */
 const otps = new Map();
 const OTP_TTL_MS = Number(process.env.MOCK_OTP_TTL_MS ?? 5 * 60 * 1000);
@@ -209,8 +222,38 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function startSession(req, res, user) {
+const hashToken = (token) => createHash('sha256').update(token).digest('hex');
+
+/** Issues a refresh token in an HttpOnly cookie scoped to /auth. A new `chain` starts a login. */
+function issueRefreshToken(res, user, chain = { id: hex24(), startedAt: Date.now() }) {
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = Math.min(
+    Date.now() + REFRESH_IDLE_TTL_MS,
+    chain.startedAt + REFRESH_MAX_AGE_MS,
+  );
+  refreshTokens.set(hashToken(token), {
+    userId: user.id,
+    chainId: chain.id,
+    startedAt: chain.startedAt,
+    expiresAt,
+  });
+  res.cookie(REFRESH_COOKIE, token, {
+    ...cookieOptions(Math.max(expiresAt - Date.now(), 1)),
+    path: REFRESH_COOKIE_PATH,
+  });
+}
+
+const clearRefreshCookie = (res) =>
+  res.clearCookie(REFRESH_COOKIE, { ...cookieOptions(), path: REFRESH_COOKIE_PATH });
+
+function revokeRefreshChains(match) {
+  for (const [hash, entry] of refreshTokens) if (match(entry)) refreshTokens.delete(hash);
+}
+
+function startSession(req, res, user, chain) {
   const sid = randomBytes(32).toString('hex');
+  // Guests have no refresh token: their session simply ends.
+  if (!user.guest) issueRefreshToken(res, user, chain);
   sessions.set(sid, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
   res.cookie(SESSION_COOKIE, sid, cookieOptions(SESSION_TTL_MS));
   res.clearCookie(ANON_COOKIE, cookieOptions());
@@ -381,6 +424,7 @@ api.post('/auth/password/reset', csrfProtect, (req, res) => {
   const user = consumeOtp(req, res, 'reset', email, otp);
   if (!user) return;
   Object.assign(user, hashPassword(newPassword));
+  revokeRefreshChains((e) => e.userId === user.id);
   // A password reset signs the user in, and any other session for the account is revoked.
   for (const [sid, session] of sessions) {
     if (session.userId === user.id) endSession(sid);
@@ -406,7 +450,43 @@ api.post('/auth/guest', csrfProtect, (req, res) => {
     .json({ user: publicUser(user), csrfToken });
 });
 
+/** MOCK-ONLY (proposed for Node): trades the refresh cookie for a new session and a new refresh token. */
+api.post('/auth/refresh', csrfProtect, (req, res) => {
+  const invalid = () => {
+    clearRefreshCookie(res);
+    return fail(req, res, 401, 'REFRESH_INVALID', 'Sign in again to continue.');
+  };
+  const token = req.cookies[REFRESH_COOKIE];
+  if (typeof token !== 'string') return invalid();
+  const hash = hashToken(token);
+  let entry = refreshTokens.get(hash);
+  if (!entry) {
+    const used = usedRefreshTokens.get(hash);
+    if (!used) return invalid();
+    // Replaying a rotated token: tolerate a race between tabs, otherwise assume it was stolen.
+    if (Date.now() - used.usedAt > REFRESH_REUSE_GRACE_MS) {
+      revokeRefreshChains((e) => e.chainId === used.entry.chainId);
+      return invalid();
+    }
+    entry = used.entry;
+  } else {
+    refreshTokens.delete(hash);
+    usedRefreshTokens.set(hash, { entry, usedAt: Date.now() });
+  }
+  const user = [...usersByEmail.values()].find((u) => u.id === entry.userId);
+  if (!user || entry.expiresAt < Date.now()) return invalid();
+  const csrfToken = startSession(req, res, user, {
+    id: entry.chainId,
+    startedAt: entry.startedAt,
+  });
+  res.set('Cache-Control', 'no-store').json({ user: publicUser(user), csrfToken });
+});
+
 api.post('/auth/logout', requireAuth, csrfProtect, (req, res) => {
+  const refresh = req.cookies[REFRESH_COOKIE];
+  const entry = typeof refresh === 'string' && refreshTokens.get(hashToken(refresh));
+  if (entry) revokeRefreshChains((e) => e.chainId === entry.chainId);
+  clearRefreshCookie(res);
   endSession(req.auth.sid);
   res.clearCookie(SESSION_COOKIE, cookieOptions());
   res.status(204).end();

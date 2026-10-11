@@ -1,7 +1,7 @@
 <div
   class="rounded-lg border p-4 text-sm"
   [class]="
-    isQuota()
+    isQuota() || isTimeout()
       ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200'
       : 'border-red-300 bg-red-50 text-red-900 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200'
   "
@@ -9,7 +9,7 @@
 >
   <p class="flex items-start gap-2 font-medium">
     <fa-icon [icon]="errorIcon" class="mt-0.5" />
-    {{ isQuota() ? 'AI quota reached' : 'Review failed' }}
+    {{ title() }}
   </p>
   @if (message(); as text) {
     <p class="mt-1" data-testid="failure-message">{{ text }}</p>

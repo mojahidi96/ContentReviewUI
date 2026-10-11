@@ -2,8 +2,8 @@ import { DestroyRef, Component, computed, inject, input, output, signal } from '
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
 import { faCircleExclamation, faRotateRight } from '@fortawesome/free-solid-svg-icons';
 import { ButtonDirective } from '../../../shared/components/button.directive';
-import { ModelSelection } from '../model-selection';
-import { QUOTA_ERROR_CODE, type ReviewFailure } from '../review.models';
+import { ModelSelection, failedModelOf } from '../model-selection';
+import { QUOTA_ERROR_CODE, TIMEOUT_ERROR_CODE, type ReviewFailure } from '../review.models';
 import { formatResetTime, formatTimeLeft } from './failure-time';
 
 /**
@@ -16,7 +16,6 @@ import { formatResetTime, formatTimeLeft } from './failure-time';
   selector: 'app-review-failure',
   imports: [FaIconComponent, ButtonDirective],
   templateUrl: './review-failure.html',
-  styleUrl: './review-failure.scss',
 })
 export class ReviewFailureBanner {
   private readonly models = inject(ModelSelection);
@@ -49,9 +48,18 @@ export class ReviewFailureBanner {
   protected readonly retryBlocked = computed(
     () => this.quota()?.scope === 'daily' && this.waiting(),
   );
+  protected readonly isTimeout = computed(() => this.failure()?.code === TIMEOUT_ERROR_CODE);
+  protected readonly title = computed(() =>
+    this.isQuota() ? 'AI quota reached' : this.isTimeout() ? 'Review timed out' : 'Review failed',
+  );
+  /** Another model can help when this one is out of quota or too slow. */
   protected readonly canTryAnother = computed(() => {
-    const model = this.quota()?.model;
-    return !!model && this.models.hasAlternative(model);
+    const failure = this.failure();
+    return (
+      !!failure &&
+      (this.isQuota() || this.isTimeout()) &&
+      this.models.hasAlternative(failedModelOf(failure, this.models.defaultModel()))
+    );
   });
 
   protected readonly errorIcon = faCircleExclamation;

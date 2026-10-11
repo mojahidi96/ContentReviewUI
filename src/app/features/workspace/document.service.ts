@@ -111,8 +111,9 @@ export class DocumentService {
   /**
    * Saves the title and content: creates the document the first time, then updates it with the
    * last known version. The content string is sent exactly as it is in the editor.
+   * `successMessage` replaces the default "Document saved." toast.
    */
-  save(): void {
+  save(options: { successMessage?: string } = {}): void {
     if (!this.canSave()) {
       return;
     }
@@ -126,7 +127,7 @@ export class DocumentService {
       next: (doc) => {
         // Edits typed while the request was in flight stay unsaved: only what was sent is recorded.
         this._saved.set(snapshotOf(doc));
-        this.notifications.success('Document saved.');
+        this.notifications.success(options.successMessage ?? 'Document saved.');
       },
       error: (error) => this.onSaveError(error),
     });

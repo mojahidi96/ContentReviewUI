@@ -12,7 +12,9 @@ export const environment: AppConfig = {
     maxChars: 50_000,
     categories: ['grammar', 'spelling', 'profanity'],
     pageSize: 20,
+    createTimeoutMs: 30_000,
   },
   reviewEvents: { maxReconnects: 5, reconnectDelayMs: 3_000 },
+  reviewWatchdog: { stillWorkingMs: 30_000, stalledMs: 150_000, pollMs: 5_000 },
   features: { guestLogin: false },
 };

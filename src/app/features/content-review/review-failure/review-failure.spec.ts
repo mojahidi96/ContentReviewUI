@@ -12,6 +12,7 @@ const MESSAGE =
 const quotaFailure = (scope: QuotaScope, resetAtMs: number | null): ReviewFailure => ({
   code: 'LLM_SERVICE_RATE_LIMITED',
   message: MESSAGE,
+  model: 'gemini-3.6-flash',
   quota: { model: 'gemini-3.6-flash', scope, resetAtMs },
 });
 
@@ -108,8 +109,9 @@ describe('ReviewFailureBanner', () => {
 
   it('shows only errorMessage for other failures, never the code', async () => {
     const failure: ReviewFailure = {
-      code: 'LLM_SERVICE_TIMEOUT',
+      code: 'PROCESSING_FAILED',
       message: 'It took too long.',
+      model: null,
       quota: null,
     };
     await render(failure, 'It took too long.');
@@ -118,10 +120,27 @@ describe('ReviewFailureBanner', () => {
     expect(el.querySelector('[data-testid=failure-message]')?.textContent).toBe(
       'It took too long.',
     );
-    expect(text).not.toContain('LLM_SERVICE_TIMEOUT');
+    expect(text).not.toContain('PROCESSING_FAILED');
     expect(el.querySelector('[data-testid=quota-reset]')).toBeNull();
     expect(another()).toBeNull();
     expect(retry().disabled).toBe(false);
+  });
+
+  it('treats a timeout like a failure with Retry always enabled and another model offered', async () => {
+    const failure: ReviewFailure = {
+      code: 'LLM_SERVICE_TIMEOUT',
+      message: 'The model took too long.',
+      model: null,
+      quota: null,
+    };
+    await render(failure, 'The model took too long.');
+    expect(el.querySelector('[role=alert]')?.textContent).toContain('Review timed out');
+    expect(el.querySelector('[data-testid=failure-message]')?.textContent).toBe(
+      'The model took too long.',
+    );
+    expect(retry().disabled).toBe(false);
+    expect(el.querySelector('[data-testid=quota-reset]')).toBeNull();
+    expect(another()).not.toBeNull();
   });
 
   it('offers Resume for an interrupted stream', async () => {
