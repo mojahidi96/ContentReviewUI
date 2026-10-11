@@ -107,6 +107,16 @@ The mock API reads an optional `.env` file. Copy `.env.example` to `.env` to cha
 | `MOCK_SESSION_TTL_MS` | 15 min | Shorten to demo session-expiry handling |
 | `MOCK_LATENCY_MS` / `MOCK_REVIEW_LATENCY_MS` | `300` / `1200` | Simulated request latency / analysis time |
 
+## Deploying to Vercel
+
+The SPA is static; `vercel.json` sets the build (`npm run build` → `dist/content-review-ui/browser`), a SPA fallback to `index.html`, and an `/api/*` rewrite to the Node ContentReviewService so the browser stays same-origin (cookie auth, CSRF and SSE all rely on that).
+
+1. Host the Node service somewhere reachable over HTTPS and set its `FRONTEND_ORIGIN` to the Vercel URL. Session cookies must be `Secure` (`SameSite=Lax` works because of the rewrite), and its proxy must not buffer `text/event-stream`.
+2. In `vercel.json`, replace `REPLACE-WITH-BACKEND-HOST` with the API host.
+3. In Vercel: Add New → Project → import this GitHub repo (preset "Other"; settings come from `vercel.json`). Every push and PR then gets a deployment.
+
+Until the API is hosted the UI loads, but sign-in fails. Vercel's rewrite proxy has time limits, so if long review streams are cut, the app falls back to its reconnect/polling logic.
+
 ## Demo walkthrough
 
 1. **Auth:** visit `/workspace` while signed out and you are redirected to `/login?returnUrl=…`. Try submitting an empty form, a malformed email, a wrong password, or registering with `demo@example.com` (duplicate email).
