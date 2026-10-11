@@ -6,6 +6,7 @@ import { InvalidResponseError } from '../../core/http/api-error';
 import type {
   CreateDocumentRequestDto,
   SavedDocument,
+  SavedDocumentPage,
   SavedDocumentSummary,
   UpdateDocumentRequestDto,
 } from './document.models';
@@ -40,6 +41,13 @@ export class DocumentApiService {
       .pipe(map(toLatestSummary));
   }
 
+  /** One page of the author's documents, most recently updated first (no content). */
+  list(page: number, limit: number): Observable<SavedDocumentPage> {
+    return this.http
+      .get<unknown>(this.baseUrl, { params: { page: String(page), limit: String(limit) } })
+      .pipe(map(toDocumentPage));
+  }
+
   private documentUrl(id: string): string {
     return `${this.baseUrl}/${encodeURIComponent(id)}`;
   }
@@ -64,6 +72,8 @@ function toSummary(d: unknown, what: string): SavedDocumentSummary {
     title: d['title'],
     version: d['version'] as number,
     updatedAt: d['updatedAt'],
+    createdAt: typeof d['createdAt'] === 'string' ? d['createdAt'] : d['updatedAt'],
+    contentLength: Number.isInteger(d['contentLength']) ? (d['contentLength'] as number) : 0,
   };
 }
 
@@ -83,4 +93,19 @@ function toLatestSummary(body: unknown): SavedDocumentSummary | null {
     throw new InvalidResponseError('document list');
   }
   return items.length === 0 ? null : toSummary(items[0], 'document list item');
+}
+
+function toDocumentPage(body: unknown): SavedDocumentPage {
+  const items = isRecord(body) ? body['items'] : undefined;
+  if (!isRecord(body) || !Array.isArray(items)) {
+    throw new InvalidResponseError('document list');
+  }
+  const number = (key: string, fallback: number): number =>
+    Number.isInteger(body[key]) ? (body[key] as number) : fallback;
+  return {
+    items: items.map((item) => toSummary(item, 'document list item')),
+    page: number('page', 1),
+    totalPages: number('totalPages', 1),
+    total: number('total', items.length),
+  };
 }

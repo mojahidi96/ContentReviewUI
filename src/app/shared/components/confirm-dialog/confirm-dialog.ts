@@ -9,7 +9,6 @@ import { ButtonDirective, type ButtonVariant } from '../button.directive';
   selector: 'app-confirm-dialog',
   imports: [ButtonDirective],
   templateUrl: './confirm-dialog.html',
-  styleUrl: './confirm-dialog.scss',
 })
 export class ConfirmDialog {
   private static nextId = 0;

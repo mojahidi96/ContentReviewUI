@@ -1,12 +1,19 @@
 import { HttpTestingController } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { Router } from '@angular/router';
+import { Router, type Routes } from '@angular/router';
 import { AuthService } from '../../../core/auth/auth.service';
 import { ViewportService } from '../../../core/layout/viewport.service';
 import { TEST_READER, TEST_USER, provideTestHttp, signIn } from '../../../testing/test-providers';
 import { DocumentService } from '../document.service';
 import { WorkspaceShell } from './workspace-shell';
+
+// The side panel reads the current URL, so the shell is tested at a real (empty) route.
+const ROUTES: Routes = [
+  { path: 'workspace', children: [] },
+  { path: 'workspace/documents', children: [] },
+  { path: 'workspace/history', children: [] },
+];
 
 describe('WorkspaceShell', () => {
   let fixture: ComponentFixture<WorkspaceShell>;
@@ -29,13 +36,22 @@ describe('WorkspaceShell', () => {
     isDesktop.set(true);
     TestBed.configureTestingModule({
       imports: [WorkspaceShell],
-      providers: [...provideTestHttp(), { provide: ViewportService, useValue: { isDesktop } }],
+      providers: [
+        ...provideTestHttp(ROUTES),
+        { provide: ViewportService, useValue: { isDesktop } },
+      ],
     });
     http = TestBed.inject(HttpTestingController);
     signIn(TEST_USER);
 
     fixture = TestBed.createComponent(WorkspaceShell);
     el = fixture.nativeElement;
+    await TestBed.inject(Router).navigateByUrl('/workspace');
+    await fixture.whenStable();
+    // Authors' model list is loaded when the workspace opens.
+    http
+      .expectOne('/api/v1/reviews/models')
+      .flush({ defaultModel: 'gemini-3.6-flash', models: ['gemini-3.6-flash'] });
     await fixture.whenStable();
   });
 
@@ -52,13 +68,53 @@ describe('WorkspaceShell', () => {
     expect(el.querySelector('a[href="/workspace/history"]')).not.toBeNull();
   });
 
+  describe('navigation', () => {
+    const navigateTo = async (url: string) => {
+      await TestBed.inject(Router).navigateByUrl(url);
+      await fixture.whenStable();
+    };
+    const modelPicker = () => el.querySelector('app-model-picker');
+
+    it('offers Home (the document list) and no separate Documents or Document item', () => {
+      const labels = [...el.querySelectorAll('nav a')].map((a) => a.textContent?.trim());
+      expect(labels).toEqual(['Home', 'Review history']);
+      expect(el.querySelector('nav a[href="/workspace/documents"]')?.textContent).toContain('Home');
+    });
+
+    it('highlights Home on the document list and hides Content Review and the model picker', async () => {
+      await navigateTo('/workspace/documents');
+      const home = el.querySelector('nav a[href="/workspace/documents"]')!;
+      expect(home.getAttribute('aria-current')).toBe('page');
+      expect(button('Content Review')).toBeUndefined();
+      expect(modelPicker()).toBeNull();
+    });
+
+    it('shows Content Review and the model picker only on the open document', async () => {
+      expect(button('Content Review')).toBeTruthy();
+      expect(modelPicker()).not.toBeNull();
+      expect(
+        el.querySelector('nav a[href="/workspace/documents"]')?.getAttribute('aria-current'),
+      ).toBe('page');
+      await navigateTo('/workspace?document=abc');
+      expect(button('Content Review')).toBeTruthy();
+      await navigateTo('/workspace/history');
+      expect(button('Content Review')).toBeUndefined();
+      expect(modelPicker()).toBeNull();
+      expect(
+        el.querySelector('nav a[href="/workspace/history"]')?.getAttribute('aria-current'),
+      ).toBe('page');
+    });
+  });
+
   it('hides review tools and authoring pages from read-only users', async () => {
     signIn(TEST_READER);
     await fixture.whenStable();
     expect(el.textContent).toContain('Read only');
     expect(button('Content Review')).toBeUndefined();
     expect(el.querySelector('a[href="/workspace/history"]')).toBeNull();
-    expect(el.querySelector('a[href="/workspace"]')).not.toBeNull();
+    const home = el.querySelector('nav a[href="/workspace"]');
+    expect(home?.textContent).toContain('Home');
+    expect(el.querySelector('nav a[href="/workspace/documents"]')).toBeNull();
   });
 
   describe('desktop sidebar', () => {

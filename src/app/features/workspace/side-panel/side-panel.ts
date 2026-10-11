@@ -1,20 +1,26 @@
-import { Component, computed, input, output } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { Component, computed, inject, input, output } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink } from '@angular/router';
+import { filter, map } from 'rxjs';
 import { FaIconComponent } from '@fortawesome/angular-fontawesome';
 import {
   faAnglesLeft,
   faAnglesRight,
   faClockRotateLeft,
-  faFileLines,
+  faHouse,
   faWandMagicSparkles,
 } from '@fortawesome/free-solid-svg-icons';
+import { ModelPicker } from '../../content-review/model-picker/model-picker';
 import { Spinner } from '../../../shared/components/spinner/spinner';
 
 interface NavItem {
   readonly label: string;
   readonly link: string;
-  readonly icon: typeof faFileLines;
-  readonly exact: boolean;
+  /** Readers cannot open the document list, so Home takes them to the shared text. */
+  readonly readerLink?: string;
+  readonly icon: typeof faHouse;
+  /** Whether the current path (no query string) belongs to this item. */
+  readonly matches: (path: string) => boolean;
   /** Hidden from read-only users. */
   readonly authorOnly: boolean;
 }
@@ -25,10 +31,9 @@ interface NavItem {
  */
 @Component({
   selector: 'app-side-panel',
-  imports: [RouterLink, RouterLinkActive, FaIconComponent, Spinner],
+  imports: [RouterLink, FaIconComponent, ModelPicker, Spinner],
   host: { class: 'flex h-full flex-col' },
   templateUrl: './side-panel.html',
-  styleUrl: './side-panel.scss',
 })
 export class SidePanel {
   readonly collapsed = input(false);
@@ -42,20 +47,53 @@ export class SidePanel {
   readonly collapseToggled = output();
   readonly navigated = output();
 
+  private readonly router = inject(Router);
+  private readonly path = toSignal(
+    this.router.events.pipe(
+      filter((event) => event instanceof NavigationEnd),
+      map(() => pathOf(this.router.url)),
+    ),
+    { initialValue: pathOf(this.router.url) },
+  );
+
+  /**
+   * Content Review and its model picker belong to the document open in the editor, so they only
+   * show there. Home (the document list and articles) has nothing to review.
+   */
+  protected readonly onDocument = computed(() => this.path() === '/workspace');
+
   private readonly allNavItems: readonly NavItem[] = [
-    { label: 'Document', link: '/workspace', icon: faFileLines, exact: true, authorOnly: false },
+    {
+      label: 'Home',
+      link: '/workspace/documents',
+      readerLink: '/workspace',
+      icon: faHouse,
+      // Home also covers the editor: it is reached from a document in the list.
+      matches: (path) => path === '/workspace' || path.startsWith('/workspace/documents'),
+      authorOnly: false,
+    },
     {
       label: 'Review history',
       link: '/workspace/history',
       icon: faClockRotateLeft,
-      exact: false,
+      matches: (path) => path.startsWith('/workspace/history'),
       authorOnly: true,
     },
   ];
   protected readonly navItems = computed(() =>
-    this.allNavItems.filter((item) => this.canReview() || !item.authorOnly),
+    this.allNavItems
+      .filter((item) => this.canReview() || !item.authorOnly)
+      .map((item) => ({
+        ...item,
+        link: (!this.canReview() && item.readerLink) || item.link,
+        active: item.matches(this.path()),
+      })),
   );
   protected readonly reviewIcon = faWandMagicSparkles;
   protected readonly collapseIcon = faAnglesLeft;
   protected readonly expandIcon = faAnglesRight;
+}
+
+function pathOf(url: string): string {
+  return url.split(/[?#]/)[0];
 }

@@ -39,6 +39,11 @@ The UI keeps its own domain types and converts in one place
 | POST | `/auth/login` | – | ✓ | ✅ | Login page |
 | POST | `/auth/logout` | ✓ | ✓ | ✅ | Sign out |
 | GET | `/auth/me` | ✓ | – | ✅ | Session restore at startup |
+| POST | `/auth/refresh` | refresh cookie | ✓ | 🟡 proposed | Silent session renewal on `401`, and at startup |
+| POST | `/auth/otp/request` | – | ✓ | 🟡 proposed | "Email me a code" (login) |
+| POST | `/auth/otp/login` | – | ✓ | 🟡 proposed | Sign in with the 4-digit code |
+| POST | `/auth/password/forgot` | – | ✓ | 🟡 proposed | Forgot password: email the code |
+| POST | `/auth/password/reset` | – | ✓ | 🟡 proposed | Code + new password, then signs in |
 | POST | `/auth/guest` | – | ✓ | 🟡 mock-only | "Continue as guest" (feature flag, off for Node) |
 | POST | `/reviews` | ✓ | ✓ | ✅ | Run Content Review |
 | GET | `/reviews` | ✓ | – | ✅ | Review history (paginated) |
@@ -298,6 +303,47 @@ interface User {
   guest?: true;
 }
 ```
+
+### Refresh token 🟡 proposed (mock implements it; Node does not yet)
+
+Backend prompt: [backend-prompts/03-refresh-token.md](backend-prompts/03-refresh-token.md).
+
+- Login, register, OTP login and password reset also set an HttpOnly `content_review_refresh`
+  cookie (`Path=/api/v1/auth`, opaque, rotated on every use). The session cookie stays short-lived (15 min).
+- `POST /auth/refresh` (CSRF, no session needed; the UI fetches an anonymous token with
+  `GET /auth/csrf` first) → `200 { user, csrfToken }` + new session cookie + new refresh cookie.
+  `401 REFRESH_INVALID` when missing, expired, revoked or reused.
+- The refresh token lives **2 days since last use** (sliding: each refresh issues a new token with
+  a new 2-day expiry) with an optional 30-day absolute cap.
+- UI behaviour: a protected `401` triggers one refresh and a repeat of the request (concurrent
+  failures share one refresh); only a refused refresh shows "session expired". At startup a
+  failed `/auth/me` is followed by a refresh, so returning within 2 days needs no sign-in.
+
+### Review models and quota failures
+
+- `GET /reviews/models` (auth) → `{ defaultModel, models[] }` (`defaultModel` is in `models`); `503`
+  when unavailable. The UI then hides the picker ("Using the default model") and sends no `model`.
+- `POST /reviews` accepts an optional `model`; unknown → `400 VALIDATION_FAILED` with
+  `details: [{ path: "model", message }]` (the UI resets to the default and refreshes the list).
+- Reviews and list items carry `model: string | null` (`null` = default).
+- A failed review carries a user-safe `errorMessage`, shown as sent, and, for
+  `LLM_SERVICE_RATE_LIMITED` only, `errorDetails { model, quotaScope: daily|minute|unknown,
+  retryAfterSeconds, resetAt }` where every field may be missing. Daily quotas keep Retry disabled
+  until `resetAt`. SSE `review.progress` with `stage: "retrying"` is not an error.
+- The mock serves these; `MOCK_EXHAUSTED_MODELS=gemini-3.6-flash npm run dev` makes that model fail
+  with a daily quota error.
+
+### Emailed codes 🟡 proposed (mock implements them; Node does not yet)
+
+- `POST /auth/otp/request` and `POST /auth/password/forgot`: `{ email }` → `202 { expiresInSeconds }`.
+  Always `202` for any well-formed email, so accounts cannot be probed. The server emails a 4-digit code.
+- `POST /auth/otp/login`: `{ email, otp }` → `200 { user, csrfToken }` + session cookie.
+- `POST /auth/password/reset`: `{ email, otp, newPassword }` → `200 { user, csrfToken }`; sets the
+  password, revokes the account's other sessions and signs in.
+- Wrong, expired or unknown code → `401 OTP_INVALID`; too many attempts → `429 RATE_LIMITED`.
+  Codes are single-use, expire after 5 minutes, allow 5 attempts, and each purpose has its own code.
+- The mock cannot send email: it prints codes to the `mock-api` console
+  (`[mock-api] login code for demo@example.com: 0420`).
 
 ### `POST /auth/guest` 🟡 mock-only
 

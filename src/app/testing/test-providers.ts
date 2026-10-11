@@ -26,8 +26,14 @@ export const TEST_CONFIG: AppConfig = {
   production: false,
   apiBaseUrl: '/api/v1',
   requestTimeoutMs: 1_000,
-  review: { maxChars: 100, categories: ['grammar', 'spelling', 'profanity'], pageSize: 20 },
+  review: {
+    maxChars: 100,
+    categories: ['grammar', 'spelling', 'profanity'],
+    pageSize: 20,
+    createTimeoutMs: 1_000,
+  },
   reviewEvents: { maxReconnects: 2, reconnectDelayMs: 0 },
+  reviewWatchdog: { stillWorkingMs: 3_000, stalledMs: 15_000, pollMs: 500 },
   features: { guestLogin: true },
 };
 
@@ -144,6 +150,8 @@ export function makeReview(
     contentLength: content.length,
     findings,
     errorCode: null,
+    failure: null,
+    model: null,
     ...overrides,
   };
 }
@@ -180,6 +188,8 @@ export function makeReviewDto(
     findingCount: findings.length,
     errorCode: null,
     errorMessage: null,
+    errorDetails: null,
+    model: null,
     createdAt: '2026-10-01T10:00:00.000Z',
     updatedAt: '2026-10-01T10:00:00.000Z',
     completedAt: '2026-10-01T10:00:05.000Z',

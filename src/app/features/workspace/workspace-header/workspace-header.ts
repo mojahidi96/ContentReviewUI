@@ -4,11 +4,13 @@ import {
   faBars,
   faEye,
   faMoon,
+  faFeatherPointed,
   faPenNib,
   faRightFromBracket,
   faSpellCheck,
   faSun,
 } from '@fortawesome/free-solid-svg-icons';
+import { RouterLink } from '@angular/router';
 import type { User } from '../../../core/auth/auth.models';
 import { ThemeService } from '../../../core/theme/theme.service';
 import { Badge } from '../../../shared/components/badge';
@@ -17,13 +19,12 @@ import { Spinner } from '../../../shared/components/spinner/spinner';
 
 @Component({
   selector: 'app-workspace-header',
-  imports: [FaIconComponent, Badge, ButtonDirective, Spinner],
+  imports: [RouterLink, FaIconComponent, Badge, ButtonDirective, Spinner],
   host: {
     class:
       'flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:px-6 dark:border-slate-800 dark:bg-slate-900',
   },
   templateUrl: './workspace-header.html',
-  styleUrl: './workspace-header.scss',
 })
 export class WorkspaceHeader {
   readonly user = input<User | null>(null);
@@ -49,6 +50,7 @@ export class WorkspaceHeader {
       .join(''),
   );
 
+  protected readonly writeIcon = faFeatherPointed;
   protected readonly menuIcon = faBars;
   protected readonly logoIcon = faSpellCheck;
   protected readonly logoutIcon = faRightFromBracket;

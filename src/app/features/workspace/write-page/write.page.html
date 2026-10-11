@@ -1,0 +1,67 @@
+<div
+  class="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90"
+>
+  <div class="mx-auto flex h-14 max-w-[52rem] items-center gap-4 px-4 sm:px-6">
+    <p class="text-sm text-slate-600 dark:text-slate-400">Draft</p>
+    <p
+      class="ml-auto text-xs tabular-nums"
+      [class]="
+        overLimit()
+          ? 'font-semibold text-red-700 dark:text-red-300'
+          : 'text-slate-600 dark:text-slate-400'
+      "
+      aria-live="polite"
+    >
+      {{ length() }} / {{ maxChars }}
+      <span class="sr-only">characters</span>
+    </p>
+    <button
+      type="button"
+      appButton
+      variant="success"
+      size="sm"
+      class="rounded-full"
+      aria-keyshortcuts="Control+Enter Meta+Enter"
+      [disabled]="!canPublish()"
+      [attr.title]="publishHint()"
+      (click)="publish()"
+    >
+      @if (publishing()) {
+        <app-spinner />
+        Publishing…
+      } @else {
+        <fa-icon [icon]="publishIcon" />
+        Publish
+      }
+    </button>
+  </div>
+</div>
+
+<div class="mx-auto max-w-[44rem] px-4 pt-10 pb-24 sm:px-6 sm:pt-16">
+  <h1 class="sr-only">Write a new document</h1>
+  <label for="write-title" class="sr-only">Title</label>
+  <textarea
+    id="write-title"
+    rows="1"
+    placeholder="Title"
+    autocomplete="off"
+    maxlength="200"
+    class="field-sizing-content block w-full resize-none border-0 bg-transparent font-serif text-4xl font-bold tracking-tight text-slate-900 placeholder:text-slate-400 focus:outline-none sm:text-5xl dark:text-slate-50 dark:placeholder:text-slate-600"
+    [value]="title()"
+    (input)="onTitleInput($event)"
+  ></textarea>
+
+  <label for="write-content" class="sr-only">Story</label>
+  <textarea
+    id="write-content"
+    placeholder="Tell your story…"
+    class="field-sizing-content mt-6 block min-h-[50vh] w-full resize-none border-0 bg-transparent font-serif text-xl leading-9 text-slate-800 placeholder:text-slate-400 focus:outline-none dark:text-slate-200 dark:placeholder:text-slate-600"
+    [value]="content()"
+    (input)="onContentInput($event)"
+  ></textarea>
+  @if (overLimit()) {
+    <p class="mt-2 text-sm font-medium text-red-700 dark:text-red-300" role="alert">
+      This is over the {{ maxChars }} character limit. Shorten it to publish.
+    </p>
+  }
+</div>

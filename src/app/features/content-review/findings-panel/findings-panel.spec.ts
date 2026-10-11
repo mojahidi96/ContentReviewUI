@@ -8,9 +8,12 @@ import {
   flushCsrf,
   makeFinding,
   provideTestHttp,
+  reviewBody,
 } from '../../../testing/test-providers';
+import { NotificationService } from '../../../core/notifications/notification.service';
 import { DocumentService } from '../../workspace/document.service';
 import { FindingsPanel } from './findings-panel';
+import { ModelSelection } from '../model-selection';
 import { ReviewStore } from '../review.store';
 
 describe('FindingsPanel', () => {
@@ -25,7 +28,7 @@ describe('FindingsPanel', () => {
   beforeEach(async () => {
     TestBed.configureTestingModule({
       imports: [FindingsPanel],
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     http = TestBed.inject(HttpTestingController);
     doc = TestBed.inject(DocumentService);
@@ -55,7 +58,7 @@ describe('FindingsPanel', () => {
     expect(el.textContent).toContain('took longer than expected');
     expect(doc.content()).toBe('the teh cat');
 
-    button('Retry review')!.click();
+    button('Retry')!.click();
     await fixture.whenStable();
     completeReviewFlow(http, 'the teh cat', [makeFinding()]);
     await fixture.whenStable();
@@ -76,6 +79,34 @@ describe('FindingsPanel', () => {
     completeReviewFlow(http, 'the teh cat', findings);
     await fixture.whenStable();
   };
+
+  it('shows which model produced the review', async () => {
+    TestBed.inject(ReviewStore).submit();
+    completeReviewFlow(http, 'the teh cat', [makeFinding()]);
+    await fixture.whenStable();
+    expect(el.querySelector('[data-testid=review-model]')?.textContent).toContain('Default model');
+  });
+
+  it('shows a quota failure with the reset time instead of a generic error', async () => {
+    TestBed.inject(ReviewStore).loadReview(REVIEW_ID);
+    http.expectOne(`/api/v1/reviews/${REVIEW_ID}`).flush(
+      reviewBody('the teh cat', [], {
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'The daily quota is exhausted.',
+        errorDetails: {
+          model: 'gemini-3.6-flash',
+          quotaScope: 'daily',
+          resetAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        },
+      }),
+    );
+    await fixture.whenStable();
+    expect(el.textContent).toContain('AI quota reached');
+    expect(el.textContent).toContain('The daily quota is exhausted.');
+    expect(el.querySelector('[data-testid=quota-reset]')?.textContent).toContain('Resets at');
+    expect(el.querySelector<HTMLButtonElement>('[data-testid=retry-review]')!.disabled).toBe(true);
+  });
 
   it('accepts and undoes locally, without confirmation or API calls', async () => {
     await showReview();
@@ -101,6 +132,7 @@ describe('FindingsPanel', () => {
 
     button('Save Changes')!.click();
     await fixture.whenStable();
+    expect(el.querySelector('dialog[open]')?.textContent).toContain('document is saved with them');
     expect(el.querySelector('dialog[open]')?.textContent).toContain('can’t be undone');
     http.expectNone(() => true);
 
@@ -115,6 +147,29 @@ describe('FindingsPanel', () => {
     expect(patch.request.body).toEqual({ status: 'accepted' });
     patch.flush({ finding: findingToDto(makeFinding({ status: 'accepted' })) });
     await fixture.whenStable();
+    // Saving the changes saves the document as well, and confirms it with a toast.
+    const save = http.expectOne({ method: 'POST', url: '/api/v1/documents' });
+    expect(save.request.body.content).toBe('the the cat');
+    save.flush(
+      {
+        document: {
+          documentId: '6720f1c2a4b5c6d7e8f9aaaa',
+          title: doc.title(),
+          content: 'the the cat',
+          contentLength: 11,
+          version: 1,
+          createdAt: '2026-10-01T10:00:00.000Z',
+          updatedAt: '2026-10-01T10:00:00.000Z',
+        },
+      },
+      { status: 201, statusText: 'Created' },
+    );
+    await fixture.whenStable();
+    expect(
+      TestBed.inject(NotificationService)
+        .notifications()
+        .map((n) => n.message),
+    ).toContain('1 change saved and document saved.');
     expect(el.textContent).toContain('Resolved');
     expect(button('Undo')).toBeUndefined();
     expect(button('Save Changes')!.disabled).toBe(true);

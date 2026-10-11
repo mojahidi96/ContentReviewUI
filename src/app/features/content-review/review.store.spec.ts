@@ -12,10 +12,31 @@ import {
   reviewBody,
 } from '../../testing/test-providers';
 import { DocumentService } from '../workspace/document.service';
-import type { Finding, ReviewStatus } from './review.models';
+import type { SavedDocument } from '../workspace/document.models';
+import { ModelSelection } from './model-selection';
+import type { Finding, ReviewErrorDetailsDto, ReviewStatus } from './review.models';
 import { ReviewStore } from './review.store';
 
 const AT = '2026-10-01T10:00:00.000Z';
+const DOC_ID = '6720f1c2a4b5c6d7e8f9aaaa';
+const documentBody = (content: string, version = 1, title = 'Doc') => ({
+  document: {
+    documentId: DOC_ID,
+    title,
+    content,
+    contentLength: Array.from(content).length,
+    version,
+    createdAt: AT,
+    updatedAt: AT,
+  },
+});
+const documentFromBody = (content: string): SavedDocument => ({
+  id: DOC_ID,
+  title: 'Doc',
+  content,
+  version: 1,
+  updatedAt: AT,
+});
 const nextTick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('ReviewStore', () => {
@@ -84,8 +105,9 @@ describe('ReviewStore', () => {
   };
 
   beforeEach(() => {
+    localStorage.clear(); // the remembered model must not leak between tests
     TestBed.configureTestingModule({
-      providers: [...provideTestHttp(), DocumentService, ReviewStore],
+      providers: [...provideTestHttp(), DocumentService, ModelSelection, ReviewStore],
     });
     store = TestBed.inject(ReviewStore);
     doc = TestBed.inject(DocumentService);
@@ -198,7 +220,7 @@ describe('ReviewStore', () => {
       store.submit();
       const first = accept202();
       doc.setContent('second version teh');
-      store.submit();
+      store.cancelAndRetry();
       expect(first.closed).toBe(true);
 
       const second = accept202(expectCreate(), 'aaaaaaaaaaaaaaaaaaaaaaaa');
@@ -220,28 +242,351 @@ describe('ReviewStore', () => {
     });
   });
 
+  describe('watchdog', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    const run = () => {
+      store.submit();
+      return accept202();
+    };
+    const getReviewRequests = () => http.match({ method: 'GET', url: reviewUrl() });
+
+    it('ignores a second submit while a review is being created or run', () => {
+      store.submit();
+      store.submit();
+      expectCreate(); // exactly one POST, or this throws
+      store.submit();
+    });
+
+    it('counts elapsed time and shows a reassurance after the first threshold', () => {
+      const source = run();
+      source.emit('review.progress', 1, {
+        reviewId: REVIEW_ID,
+        stage: 'validating',
+        attempt: 1,
+        occurredAt: AT,
+      });
+      expect(store.progressLabel()).toBe('Validating findings…');
+      vi.advanceTimersByTime(2_000);
+      expect(store.elapsedMs()).toBe(2_000);
+      expect(store.stillWorking()).toBe(false);
+      vi.advanceTimersByTime(1_000);
+      expect(store.stillWorking()).toBe(true);
+      expect(store.stalled()).toBe(false);
+    });
+
+    it('stops the spinner when stalled, and re-fetches once automatically', () => {
+      run();
+      vi.advanceTimersByTime(14_000);
+      expect(getReviewRequests()).toHaveLength(0);
+      vi.advanceTimersByTime(1_000);
+      expect(store.stalled()).toBe(true);
+      const auto = getReviewRequests();
+      expect(auto).toHaveLength(1);
+      auto[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      expect(store.phase()).toBe('loading');
+      vi.advanceTimersByTime(10_000);
+      expect(getReviewRequests()).toHaveLength(0); // only once
+    });
+
+    it('shows a review that finished while its stream event was missed', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+      expect(store.findings().map((f) => f.id)).toEqual(['fnd_spell']);
+      vi.advanceTimersByTime(60_000);
+      expect(store.elapsedMs()).toBeLessThanOrEqual(15_000); // watchdog stopped
+    });
+
+    it('Check status re-fetches and reports that the review is still running', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.checkStatus();
+      expect(store.statusCheck()).toBe('checking');
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      expect(store.statusCheck()).toBe('running');
+      expect(store.phase()).toBe('loading');
+    });
+
+    it('Check status shows the result when the review has finished', () => {
+      run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.checkStatus();
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+    });
+
+    it('Cancel and retry stops following the old review and submits again', () => {
+      const first = run();
+      vi.advanceTimersByTime(15_000);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      store.cancelAndRetry();
+      expect(first.closed).toBe(true);
+      expect(store.stalled()).toBe(false);
+      http.expectOne({ method: 'POST', url: '/api/v1/reviews' });
+    });
+
+    it('polls while the stream is down and stops once the review is completed', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [spelling], { status: 'completed' }));
+      expect(store.phase()).toBe('success');
+      expect(source.closed).toBe(true);
+      vi.advanceTimersByTime(5_000);
+      expect(getReviewRequests()).toHaveLength(0);
+    });
+
+    it('stops polling when the stream reconnects', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(reviewBody(CONTENT, [], { status: 'processing' }));
+      source.open();
+      vi.advanceTimersByTime(2_000);
+      expect(getReviewRequests()).toHaveLength(0);
+      expect(store.phase()).toBe('loading');
+    });
+
+    it('keeps polling after a failed poll request', () => {
+      const source = run();
+      source.drop();
+      vi.advanceTimersByTime(500);
+      getReviewRequests()[0].flush(null, { status: 500, statusText: 'Server Error' });
+      expect(store.phase()).toBe('loading');
+      vi.advanceTimersByTime(500);
+      expect(getReviewRequests()).toHaveLength(1);
+    });
+
+    it('gives up on a stuck POST /reviews after the create timeout', () => {
+      store.submit();
+      const req = expectCreate();
+      vi.advanceTimersByTime(1_000);
+      expect(req.cancelled).toBe(true);
+      expect(store.phase()).toBe('error');
+      expect(store.error()).toMatch(/took longer than expected/i);
+    });
+
+    it('offers Retry and another model after an LLM_SERVICE_TIMEOUT failure', () => {
+      const models = TestBed.inject(ModelSelection);
+      models.load();
+      http.expectOne('/api/v1/reviews/models').flush({
+        defaultModel: 'gemini-3.6-flash',
+        models: ['gemini-3.6-flash', 'gemini-3.8-flash'],
+      });
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_TIMEOUT',
+          errorMessage: 'The model took too long to answer.',
+        }),
+      );
+      expect(store.error()).toBe('The model took too long to answer.');
+      expect(store.failure()?.quota).toBeNull();
+      store.tryAnotherModel();
+      expect(expectCreate().request.body.model).toBe('gemini-3.8-flash');
+    });
+  });
+
+  describe('model selection and quota failures', () => {
+    const MODELS = {
+      defaultModel: 'gemini-3.6-flash',
+      models: ['gemini-3.6-flash', 'gemini-3.8-flash'],
+    };
+    let models: ModelSelection;
+    const loadModels = () => {
+      models = TestBed.inject(ModelSelection);
+      models.load();
+      http.expectOne('/api/v1/reviews/models').flush(MODELS);
+    };
+
+    it('omits model when the default is selected', () => {
+      loadModels();
+      store.submit();
+      expect(expectCreate().request.body).not.toHaveProperty('model');
+    });
+
+    it('sends the chosen model', () => {
+      loadModels();
+      models.select('gemini-3.8-flash');
+      store.submit();
+      expect(expectCreate().request.body.model).toBe('gemini-3.8-flash');
+    });
+
+    it('resets to the default and says so when the server rejects the model', () => {
+      loadModels();
+      models.select('gemini-3.8-flash');
+      store.submit();
+      expectCreate().flush(
+        {
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'x',
+            details: [{ path: 'model', message: 'This model is not available.' }],
+          },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      expect(store.phase()).toBe('error');
+      expect(store.error()).toBe('That model is no longer available. Please choose another.');
+      expect(models.selected()).toBe('gemini-3.6-flash');
+      http.expectOne('/api/v1/reviews/models').flush(MODELS); // list refreshed
+    });
+
+    it('exposes a quota failure and marks the model so another can be chosen', () => {
+      loadModels();
+      store.submit();
+      const source = accept202();
+      const resetAt = '2026-10-11T05:30:00+00:00';
+      const details: ReviewErrorDetailsDto = {
+        model: 'gemini-3.6-flash',
+        quotaScope: 'daily',
+        retryAfterSeconds: 7105,
+        resetAt,
+      };
+      source.emit('review.failed', 1, {
+        reviewId: REVIEW_ID,
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'The daily quota for model gemini-3.6-flash is exhausted.',
+        errorDetails: details,
+        occurredAt: AT,
+      });
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'The daily quota for model gemini-3.6-flash is exhausted.',
+          errorDetails: details,
+        }),
+      );
+      expect(store.error()).toBe('The daily quota for model gemini-3.6-flash is exhausted.');
+      expect(store.failure()?.quota).toEqual({
+        model: 'gemini-3.6-flash',
+        scope: 'daily',
+        resetAtMs: Date.parse(resetAt),
+      });
+      expect(models.options()[0].quotaReached).toBe(true);
+      expect(models.selected()).toBe('gemini-3.8-flash');
+    });
+
+    it('falls back to the plain message when an older failed review has no errorDetails', () => {
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Too busy right now.',
+        }),
+      );
+      expect(store.error()).toBe('Too busy right now.');
+      expect(store.failure()?.quota).toEqual({ model: null, scope: 'unknown', resetAtMs: null });
+    });
+
+    it('computes the reset time from retryAfterSeconds when resetAt is missing', () => {
+      const before = Date.now();
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Slow down.',
+          errorDetails: { quotaScope: 'minute', retryAfterSeconds: 30 },
+        }),
+      );
+      const reset = store.failure()!.quota!.resetAtMs!;
+      expect(reset).toBeGreaterThanOrEqual(before + 30_000);
+      expect(reset).toBeLessThan(before + 40_000);
+    });
+
+    it('"Try another model" switches to the next available model and reviews again', () => {
+      loadModels();
+      store.submit();
+      const source = accept202();
+      const failed = {
+        status: 'failed' as const,
+        errorCode: 'LLM_SERVICE_RATE_LIMITED',
+        errorMessage: 'Quota reached.',
+        errorDetails: { model: 'gemini-3.6-flash', quotaScope: 'daily' as const },
+      };
+      source.emit('review.failed', 1, { reviewId: REVIEW_ID, ...failed, occurredAt: AT });
+      http.expectOne(reviewUrl()).flush(reviewBody(CONTENT, [], failed));
+      expect(store.phase()).toBe('error');
+
+      store.tryAnotherModel();
+      expect(store.phase()).toBe('loading');
+      const req = http.expectOne({ method: 'POST', url: '/api/v1/reviews' });
+      expect(req.request.body.model).toBe('gemini-3.8-flash');
+    });
+
+    it('does nothing when no other model has quota left', () => {
+      loadModels();
+      models.markQuotaReached('gemini-3.8-flash', null);
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(
+        reviewBody(CONTENT, [], {
+          status: 'failed',
+          errorCode: 'LLM_SERVICE_RATE_LIMITED',
+          errorMessage: 'Quota reached.',
+          errorDetails: { model: 'gemini-3.6-flash', quotaScope: 'daily' },
+        }),
+      );
+      store.tryAnotherModel();
+      expect(store.phase()).toBe('error');
+    });
+
+    it('keeps a review’s model on the loaded review', () => {
+      store.loadReview(REVIEW_ID);
+      http.expectOne(reviewUrl()).flush(reviewBody(CONTENT, [], { model: 'gemini-3.8-flash' }));
+      expect(store.review()?.model).toBe('gemini-3.8-flash');
+    });
+  });
+
   describe('errors, reconnection and retry', () => {
-    it('shows fixed copy for a failed review, never the backend message', () => {
+    it('shows the failed review’s user-safe errorMessage as sent', () => {
       store.submit();
       const source = accept202();
       source.emit('review.failed', 1, {
         reviewId: REVIEW_ID,
         status: 'failed',
         errorCode: 'LLM_SERVICE_UNAVAILABLE',
-        errorMessage: 'python said: gemini quota exceeded',
+        errorMessage: 'The review service is down for maintenance.',
         occurredAt: AT,
       });
       http.expectOne(reviewUrl()).flush(
         reviewBody(CONTENT, [], {
           status: 'failed',
           errorCode: 'LLM_SERVICE_UNAVAILABLE',
-          errorMessage: 'python said: gemini quota exceeded',
+          errorMessage: 'The review service is down for maintenance.',
         }),
       );
       expect(store.phase()).toBe('error');
-      expect(store.error()).toMatch(/temporarily unavailable/i);
-      expect(store.error()).not.toMatch(/python|gemini/i);
+      expect(store.error()).toBe('The review service is down for maintenance.');
+      expect(store.failure()?.quota).toBeNull();
       expect(doc.content()).toBe(CONTENT);
+    });
+
+    it('falls back to fixed copy when a failed review has no errorMessage', () => {
+      store.submit();
+      const source = accept202();
+      source.emit('review.failed', 1, {
+        reviewId: REVIEW_ID,
+        status: 'failed',
+        errorCode: 'LLM_SERVICE_UNAVAILABLE',
+        errorMessage: '',
+        occurredAt: AT,
+      });
+      http
+        .expectOne(reviewUrl())
+        .flush(reviewBody(CONTENT, [], { status: 'failed', errorCode: 'LLM_SERVICE_UNAVAILABLE' }));
+      expect(store.error()).toMatch(/temporarily unavailable/i);
     });
 
     it('maps request errors and reports network failures', () => {
@@ -507,7 +852,52 @@ describe('ReviewStore', () => {
       expect(doc.content()).toBe('the the cat sits');
       expect(store.isStale()).toBe(false);
       expect(store.undo('fnd_spell')).toBe(false);
-      expect(notify).toHaveBeenCalledWith('2 changes saved.');
+
+      // The edited text is saved as the document too, like the editor's Save button.
+      const save = http.expectOne({ method: 'POST', url: '/api/v1/documents' });
+      expect(save.request.body.content).toBe('the the cat sits');
+      expect(doc.activity()).toBe('saving');
+      save.flush(documentBody('the the cat sits', 1, doc.title()), {
+        status: 201,
+        statusText: 'Created',
+      });
+      expect(doc.origin()).toBe('saved');
+      expect(notify).toHaveBeenCalledWith('2 changes saved and document saved.');
+    });
+
+    it('updates an already saved document instead of creating another', () => {
+      doc.adopt(documentFromBody('the teh cat sat'));
+      store.restoreReviewedContent(); // the accepted edits are unsaved changes to that document
+      store.saveChanges();
+      for (const finding of [spelling, later]) {
+        http
+          .expectOne({ method: 'PATCH', url: `${reviewUrl()}/findings/${finding.id}` })
+          .flush({ finding: findingToDto({ ...finding, status: 'accepted' }) });
+      }
+      const put = http.expectOne({ method: 'PUT', url: `/api/v1/documents/${DOC_ID}` });
+      expect(put.request.body).toMatchObject({ content: 'the the cat sits', version: 1 });
+      put.flush(documentBody('the the cat sits', 2, 'Doc'));
+      expect(doc.origin()).toBe('saved');
+    });
+
+    it('does not claim the document was saved when saving it fails', () => {
+      const notify = vi.spyOn(TestBed.inject(NotificationService), 'success');
+      doc.adopt(documentFromBody('the teh cat sat'));
+      store.restoreReviewedContent(); // the accepted edits are unsaved changes to that document
+      store.saveChanges();
+      for (const finding of [spelling, later]) {
+        http
+          .expectOne({ method: 'PATCH', url: `${reviewUrl()}/findings/${finding.id}` })
+          .flush({ finding: findingToDto({ ...finding, status: 'accepted' }) });
+      }
+      http
+        .expectOne({ method: 'PUT', url: `/api/v1/documents/${DOC_ID}` })
+        .flush(
+          { error: { code: 'DOCUMENT_VERSION_CONFLICT', message: 'x' } },
+          { status: 409, statusText: 'Conflict' },
+        );
+      expect(doc.hasConflict()).toBe(true);
+      expect(notify).not.toHaveBeenCalledWith('2 changes saved and document saved.');
     });
 
     it('keeps the changes unsaved and notifies when saving fails', () => {

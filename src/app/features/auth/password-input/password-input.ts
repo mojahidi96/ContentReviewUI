@@ -10,7 +10,6 @@ import { INPUT_CLASSES } from '../../../shared/components/form-field/form-field'
   imports: [ReactiveFormsModule, FaIconComponent],
   host: { class: 'relative block' },
   templateUrl: './password-input.html',
-  styleUrl: './password-input.scss',
 })
 export class PasswordInput {
   readonly inputId = input.required<string>();

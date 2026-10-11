@@ -40,7 +40,6 @@ const NO_ACTIONS: FindingActions = {
     '(click)': 'onCardClick($event)',
   },
   templateUrl: './finding-card.html',
-  styleUrl: './finding-card.scss',
 })
 export class FindingCard {
   readonly finding = input.required<Finding>();

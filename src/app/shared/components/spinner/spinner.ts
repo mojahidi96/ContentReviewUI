@@ -5,7 +5,6 @@ import { Component, input } from '@angular/core';
   selector: 'app-spinner',
   host: { class: 'inline-flex items-center' },
   templateUrl: './spinner.html',
-  styleUrl: './spinner.scss',
 })
 export class Spinner {
   readonly size = input<'sm' | 'md'>('sm');

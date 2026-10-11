@@ -1,0 +1,53 @@
+<div
+  class="rounded-lg border p-4 text-sm"
+  [class]="
+    isQuota() || isTimeout()
+      ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200'
+      : 'border-red-300 bg-red-50 text-red-900 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200'
+  "
+  role="alert"
+>
+  <p class="flex items-start gap-2 font-medium">
+    <fa-icon [icon]="errorIcon" class="mt-0.5" />
+    {{ title() }}
+  </p>
+  @if (message(); as text) {
+    <p class="mt-1" data-testid="failure-message">{{ text }}</p>
+  }
+  @if (isQuota() && resetAtMs() !== null) {
+    <p class="mt-2" id="quota-reset" data-testid="quota-reset">
+      @if (waiting()) {
+        Resets at <time [attr.datetime]="resetIso()">{{ resetLabel() }}</time> ({{ timeLeft() }}).
+      } @else {
+        The quota has reset. You can try again now.
+      }
+    </p>
+  }
+  <div class="mt-3 flex flex-wrap gap-2">
+    @if (canTryAnother()) {
+      <button
+        type="button"
+        appButton
+        variant="secondary"
+        size="sm"
+        data-testid="try-another-model"
+        (click)="tryAnother.emit()"
+      >
+        Try another model
+      </button>
+    }
+    <button
+      type="button"
+      appButton
+      variant="secondary"
+      size="sm"
+      data-testid="retry-review"
+      [disabled]="retryBlocked()"
+      [attr.aria-describedby]="retryBlocked() ? 'quota-reset' : null"
+      (click)="retry.emit()"
+    >
+      <fa-icon [icon]="retryIcon" />
+      {{ resumable() ? 'Resume review' : 'Retry' }}
+    </button>
+  </div>
+</div>

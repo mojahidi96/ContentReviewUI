@@ -52,17 +52,41 @@ describe('AuthService', () => {
     expect(auth.canEdit()).toBe(false);
   });
 
-  it('treats a 401 from /auth/me as anonymous without redirecting', async () => {
+  const unauthorized = { status: 401, statusText: 'Unauthorized' };
+  const authRequired = { error: { code: 'AUTH_REQUIRED', message: 'x', requestId: 'r' } };
+
+  it('treats a 401 from /auth/me as anonymous when the refresh is refused too', async () => {
     const result = firstValueFrom(auth.restoreSession());
+    http.expectOne('/api/v1/auth/me').flush(authRequired, unauthorized);
+    flushCsrf(http);
     http
-      .expectOne('/api/v1/auth/me')
-      .flush(
-        { error: { code: 'AUTH_REQUIRED', message: 'x', requestId: 'r' } },
-        { status: 401, statusText: 'Unauthorized' },
-      );
+      .expectOne('/api/v1/auth/refresh')
+      .flush({ error: { code: 'REFRESH_INVALID', message: 'x' } }, unauthorized);
     expect(await result).toBeNull();
     expect(auth.status()).toBe('anonymous');
     expect(router.navigate).not.toHaveBeenCalled();
+  });
+
+  it('restores the session through the refresh cookie when the session cookie has expired', async () => {
+    const result = firstValueFrom(auth.restoreSession());
+    http.expectOne('/api/v1/auth/me').flush(authRequired, unauthorized);
+    flushCsrf(http);
+    const refresh = http.expectOne('/api/v1/auth/refresh');
+    expect(refresh.request.method).toBe('POST');
+    expect(refresh.request.withCredentials).toBe(true);
+    refresh.flush({ user: TEST_USER_DTO, csrfToken: 'after-refresh' });
+    expect(await result).toEqual(TEST_USER);
+    expect(auth.isAuthenticated()).toBe(true);
+    expect(router.navigate).not.toHaveBeenCalled();
+  });
+
+  it('shares one refresh request between concurrent callers', async () => {
+    const first = firstValueFrom(auth.refreshSession());
+    const second = firstValueFrom(auth.refreshSession());
+    flushCsrf(http);
+    http.expectOne('/api/v1/auth/refresh').flush({ user: TEST_USER_DTO, csrfToken: 't' });
+    expect(await first).toEqual(TEST_USER);
+    expect(await second).toEqual(TEST_USER);
   });
 
   it('fetches a CSRF token before logging in and never stores a token in Web Storage', async () => {

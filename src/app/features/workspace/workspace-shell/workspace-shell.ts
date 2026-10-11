@@ -11,6 +11,7 @@ import {
 import { Router, RouterOutlet } from '@angular/router';
 import { AuthService } from '../../../core/auth/auth.service';
 import { ViewportService } from '../../../core/layout/viewport.service';
+import { ModelSelection } from '../../content-review/model-selection';
 import { ReviewStore } from '../../content-review/review.store';
 import { DocumentService } from '../document.service';
 import { SidePanel } from '../side-panel/side-panel';
@@ -33,19 +34,19 @@ function readCollapsedPreference(): boolean {
 @Component({
   selector: 'app-workspace-shell',
   imports: [RouterOutlet, SidePanel, WorkspaceHeader],
-  providers: [DocumentService, ReviewStore],
+  providers: [DocumentService, ModelSelection, ReviewStore],
   host: {
     class: 'flex h-dvh flex-col bg-slate-50 dark:bg-slate-950',
     '(document:keydown.escape)': 'closeDrawer()',
   },
   templateUrl: './workspace-shell.html',
-  styleUrl: './workspace-shell.scss',
 })
 export class WorkspaceShell {
   protected readonly auth = inject(AuthService);
   protected readonly review = inject(ReviewStore);
   protected readonly viewport = inject(ViewportService);
   private readonly router = inject(Router);
+  private readonly models = inject(ModelSelection);
   private readonly injector = inject(Injector);
   private readonly header = viewChild.required(WorkspaceHeader);
   private readonly sidebar = viewChild.required<ElementRef<HTMLElement>>('sidebar');
@@ -67,6 +68,12 @@ export class WorkspaceShell {
     }
     return this.collapsed() ? 'w-16' : 'w-64';
   });
+
+  constructor() {
+    if (this.auth.canEdit()) {
+      this.models.load();
+    }
+  }
 
   protected toggleCollapsed(): void {
     this.collapsed.update((value) => !value);

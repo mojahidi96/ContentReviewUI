@@ -1,0 +1,48 @@
+@switch (models.status()) {
+  @case ('loading') {
+    <p class="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400" role="status">
+      <app-spinner /> Loading models…
+    </p>
+  }
+  @case ('ready') {
+    <label
+      for="review-model"
+      class="mb-1.5 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-slate-600 uppercase dark:text-slate-400"
+    >
+      <fa-icon [icon]="chipIcon" class="text-brand-600 dark:text-brand-300" /> Model
+    </label>
+    <div class="relative">
+      <select
+        id="review-model"
+        class="block h-10 w-full cursor-pointer appearance-none rounded-lg border border-slate-300 bg-white py-2 pr-9 pl-3 text-sm font-medium text-slate-900 shadow-sm transition-colors hover:border-brand-500 focus:border-brand-600 focus:outline-2 focus:outline-offset-0 focus:outline-brand-600/30 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:border-brand-400 dark:focus:outline-brand-400/40"
+        [value]="models.selected()"
+        (change)="choose($event)"
+      >
+        @for (option of models.options(); track option.id) {
+          <option
+            [value]="option.id"
+            [selected]="option.id === models.selected()"
+            [disabled]="option.quotaReached"
+          >
+            {{ label(option.id) }}{{ option.isDefault ? ' (default)' : ''
+            }}{{ option.quotaReached ? ' (quota reached)' : '' }}
+          </option>
+        }
+      </select>
+      <fa-icon
+        [icon]="chevronIcon"
+        class="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs text-slate-500 dark:text-slate-400"
+      />
+    </div>
+    <p class="mt-1.5 truncate text-xs text-slate-600 dark:text-slate-400" data-testid="model-id">
+      {{ models.selected() }}
+    </p>
+  }
+  @case ('unavailable') {
+    <p
+      class="flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+    >
+      <fa-icon [icon]="chipIcon" /> Using the default model
+    </p>
+  }
+}

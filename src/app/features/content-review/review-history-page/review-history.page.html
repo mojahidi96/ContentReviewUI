@@ -75,6 +75,9 @@
                         item.findingCount === 1 ? '1 finding' : item.findingCount + ' findings'
                       }}</app-badge>
                     }
+                    <app-badge data-testid="item-model">{{
+                      item.model ?? 'Default model'
+                    }}</app-badge>
                     @if (item.id === store.review()?.id) {
                       <app-badge tone="brand">Currently open</app-badge>
                     }

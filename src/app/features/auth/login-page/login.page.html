@@ -51,6 +51,19 @@
       />
     </app-form-field>
 
+    <p class="-mt-2 flex flex-wrap justify-between gap-x-4 gap-y-1 text-sm">
+      <a
+        routerLink="/forgot-password"
+        class="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300"
+        >Forgot password?</a
+      >
+      <a
+        routerLink="/login/code"
+        class="font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300"
+        >Email me a code instead</a
+      >
+    </p>
+
     <button type="submit" appButton size="lg" class="w-full" [disabled]="pending()">
       @if (pendingAction() === 'login') {
         <app-spinner />

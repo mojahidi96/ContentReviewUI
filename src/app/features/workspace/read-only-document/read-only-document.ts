@@ -12,7 +12,6 @@ import { DocumentService } from '../document.service';
       'block rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900',
   },
   templateUrl: './read-only-document.html',
-  styleUrl: './read-only-document.scss',
 })
 export class ReadOnlyDocument {
   protected readonly document = inject(DocumentService);

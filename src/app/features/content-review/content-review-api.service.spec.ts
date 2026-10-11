@@ -108,6 +108,7 @@ describe('ContentReviewApiService', () => {
           status: 'completed',
           findingCount: 0,
           errorCode: null,
+          model: null,
         },
       ],
       page: 2,

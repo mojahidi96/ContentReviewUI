@@ -1,4 +1,4 @@
-@if (canReview()) {
+@if (canReview() && onDocument()) {
   <div class="p-3">
     <button
       type="button"
@@ -17,6 +17,9 @@
         <span>{{ reviewing() ? 'Reviewing…' : 'Content Review' }}</span>
       }
     </button>
+    @if (!collapsed()) {
+      <app-model-picker class="mt-3" />
+    }
   </div>
 }
 
@@ -33,10 +36,13 @@
       <li>
         <a
           [routerLink]="item.link"
-          routerLinkActive="bg-brand-50 text-brand-800 font-semibold dark:bg-brand-500/15 dark:text-brand-200"
-          [routerLinkActiveOptions]="{ exact: item.exact }"
-          ariaCurrentWhenActive="page"
-          class="flex h-10 items-center gap-3 rounded-md px-3 text-sm text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-focus dark:text-slate-300 dark:hover:bg-slate-800"
+          class="flex h-10 items-center gap-3 rounded-md px-3 text-sm focus-visible:outline-2 focus-visible:outline-focus"
+          [class]="
+            item.active
+              ? 'bg-brand-50 font-semibold text-brand-800 dark:bg-brand-500/15 dark:text-brand-200'
+              : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+          "
+          [attr.aria-current]="item.active ? 'page' : null"
           [class.justify-center]="collapsed()"
           [attr.aria-label]="collapsed() ? item.label : null"
           [attr.title]="collapsed() ? item.label : null"

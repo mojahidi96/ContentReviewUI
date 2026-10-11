@@ -15,6 +15,16 @@ export interface SavedDocumentSummary {
   readonly title: string;
   readonly version: number;
   readonly updatedAt: string;
+  readonly createdAt: string;
+  /** Length in Unicode code points. */
+  readonly contentLength: number;
+}
+
+export interface SavedDocumentPage {
+  readonly items: readonly SavedDocumentSummary[];
+  readonly page: number;
+  readonly totalPages: number;
+  readonly total: number;
 }
 
 // ================================================================ wire format (Node v1)
